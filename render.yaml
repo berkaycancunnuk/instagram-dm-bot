@@ -1,7 +1,7 @@
 services:
   - type: web
     name: ig-dm-bot
-    runtime: python3
+    env: python
     region: frankfurt
     plan: free
     buildCommand: "pip install -r requirements.txt"
