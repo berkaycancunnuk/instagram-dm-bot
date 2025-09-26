@@ -24,6 +24,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("igbot")
 
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
 # İsteğe bağlı koruma/log (önerilir)
 if not PAGE_ID or not PAGE_ACCESS_TOKEN:
     logger.warning("PAGE_ID veya PAGE_ACCESS_TOKEN boş. Send API denemeleri başarısız olabilir.")
