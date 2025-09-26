@@ -1,4 +1,4 @@
-import hmac, hashlib, os, json, requests, logging, time, random
+import hmac, hashlib, os, json, requests, logging, time, random, uuid
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
 from dotenv import load_dotenv
@@ -70,7 +70,7 @@ def _sleep_backoff(attempt: int, retry_after: int):
     jitter = random.uniform(0, 0.5)   # küçük jitter
     time.sleep(base + jitter)
 
-def _graph_send_with_retry(url: str, params: dict, payload: dict, max_attempts: int = 5):
+def _graph_send_with_retry(url: str, params: dict, payload: dict, max_attempts: int = 5, req_id: str | None = None):
     for attempt in range(1, max_attempts + 1):
         t0 = time.time()
         resp = SESSION.post(url, params=params, json=payload, timeout=DEFAULT_TIMEOUT)
@@ -84,7 +84,7 @@ def _graph_send_with_retry(url: str, params: dict, payload: dict, max_attempts: 
 
         # Başarılıysa bitir
         if resp.status_code < 400:
-            logger.info(f"send_ok status={resp.status_code} dur_ms={dur_ms} mid={data.get('message_id')}")
+            logger.info(f"req_id={req_id} send_ok status={resp.status_code} dur_ms={dur_ms} mid={data.get('message_id')}")
             return resp.status_code, data
 
         # Geçici hata mı?
@@ -92,12 +92,12 @@ def _graph_send_with_retry(url: str, params: dict, payload: dict, max_attempts: 
         transient = _is_transient_http(resp.status_code) or _is_transient_graph(data)
 
         if transient and attempt < max_attempts:
-            logger.error(f"send_err_transient status={resp.status_code} attempt={attempt} dur_ms={dur_ms} body={data}")
+            logger.error(f"req_id={req_id} send_err_transient status={resp.status_code} attempt={attempt} dur_ms={dur_ms} body={data}")
             _sleep_backoff(attempt, retry_after)
             continue  # yeniden dene
 
         # Geçici değilse (veya denemeler bitti ise): vazgeç
-        logger.error(f"send_err_non_retriable status={resp.status_code} dur_ms={dur_ms} body={data}")
+        logger.error(f"req_id={req_id} send_err_non_retriable status={resp.status_code} dur_ms={dur_ms} body={data}")
         return resp.status_code, data
 
     # Teorik olarak buraya gelmez
@@ -167,12 +167,12 @@ def _compute_backoff(attempt: int, base: float = 0.5, cap: float = 20.0) -> floa
     return expo + jitter
 # --- /R2 helpers ---
 
-def send_text_message(ig_sid: str, text: str):
+def send_text_message(ig_sid: str, text: str, req_id: str | None = None):
     url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{PAGE_ID}/messages"
     params = {"access_token": PAGE_ACCESS_TOKEN}
     payload = {"recipient": {"id": ig_sid}, "message": {"text": text}}
     # İstersen deneme sayısını parametrele: max_attempts=5
-    return _graph_send_with_retry(url, params, payload, max_attempts=5)
+    return _graph_send_with_retry(url, params, payload, max_attempts=5,req_id=req_id)
 
 @app.get("/webhook", response_class=PlainTextResponse)
 async def verify(req: Request):
@@ -193,6 +193,7 @@ async def verify(req: Request):
 
 @app.post("/webhook")
 async def webhook(req: Request):
+    req_id = uuid.uuid4().hex[:12]
     # 1) İmza doğrulama için ham body + header'ı al
     raw = await req.body()
     sig256 = req.headers.get("X-Hub-Signature-256")
@@ -201,17 +202,18 @@ async def webhook(req: Request):
     # İmzaları görmek için debug (sadece DEBUG=1 iken)
     if DEBUG:
         expected = 'sha256=' + hmac.new(APP_SECRET.encode('utf-8'), raw, hashlib.sha256).hexdigest()
-        logger.debug(f"sig_expected={expected} sent={(sig256 or sig1 or '')}")
+        logger.debug(f"req_id={req_id} sig_expected={expected} sent={(sig256 or sig1 or '')}")
 
     # 2) İmza yanlışsa 403
     if not verify_xhub_signature(APP_SECRET, sig256, raw, sig1):
+        logger.warning(f"req_id={req_id} sig_mismatch")
         raise HTTPException(status_code=403, detail="Invalid signature")
 
     # 3) JSON parse et
     try:
         data = await req.json()
         # istersen debug log:
-        logger.info(f"in_event {json.dumps(data)[:1000]}")
+        logger.info(f"req_id={req_id} in_event {json.dumps(data)[:1000]}")
     except Exception:
         return {"status": "ok"}
 
@@ -246,7 +248,7 @@ async def webhook(req: Request):
 
                 reply = basic_bot_reply(text)
                 try:
-                    send_text_message(sender_id, reply)
+                    send_text_message(sender_id, reply, req_id=req_id)
                 except Exception as e:
                     logger.exception(f"send_exc {e}")
 
@@ -280,7 +282,7 @@ async def webhook(req: Request):
 
                 reply = basic_bot_reply(text)
                 try:
-                    send_text_message(sender_id, reply)
+                    send_text_message(sender_id, reply, req_id=req_id)
                 except Exception as e:
                     logger.exception(f"send_exc {e}")
 
