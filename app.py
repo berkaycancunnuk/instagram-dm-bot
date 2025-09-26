@@ -1,9 +1,10 @@
-import hmac, hashlib, os, json, requests, logging, time, random, uuid
+import hmac, hashlib, os, json, requests, logging, time, random, uuid, asyncio
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse, JSONResponse
 from dotenv import load_dotenv
 from collections import OrderedDict
-
+from email.utils import parsedate_to_datetime
+from datetime import datetime, timezone
 
 load_dotenv()
 PAGE_ID = os.getenv("PAGE_ID")
@@ -41,12 +42,20 @@ DEFAULT_TIMEOUT = (5, 10)  # (connect_timeout, read_timeout) saniye
 SESSION = requests.Session()
 
 def _parse_retry_after(resp) -> int:
-    """HTTP Retry-After varsa saniye olarak döndür; yoksa 0."""
+    """HTTP Retry-After varsa saniye cinsinden döndür (sayı ya da HTTP-date destekli)."""
     ra = resp.headers.get("Retry-After")
-    try:
+    if not ra:
+        return 0
+    ra = str(ra).strip()
+    if ra.isdigit():
         return int(ra)
+    try:
+        dt = parsedate_to_datetime(ra)
+        now = datetime.now(dt.tzinfo or timezone.utc)
+        return max(0, int((dt - now).total_seconds()))
     except Exception:
         return 0
+
 
 def _is_transient_http(status: int) -> bool:
     """Geçici kabul ettiğimiz HTTP durumları."""
@@ -197,6 +206,57 @@ def basic_bot_reply(user_text: str) -> str:
         return "Kısa bir demo planlayalım: https://cal.com/senin-adin/15min"
     return "Anladım, biraz daha açabilir misiniz?"
 
+def iter_text_events(entry: dict):
+    """
+    entry içinden (messaging ve changes/messages) metin DM'leri uniform biçimde üretir.
+    yield: (sender_id, text, mid, is_echo)
+    """
+    # Kaynak 1: messaging
+    for event in entry.get("messaging", []):
+        sender_id = (event.get("sender") or {}).get("id")
+        msg = event.get("message") or {}
+        text = msg.get("text")
+        mid  = msg.get("mid")
+        is_echo = bool(msg.get("is_echo"))
+        yield sender_id, text, mid, is_echo
+
+    # Kaynak 2: changes
+    for change in entry.get("changes", []):
+        if change.get("field") != "messages":
+            continue
+        val = change.get("value") or {}
+        sender_id = (val.get("sender") or {}).get("id")
+        msg = val.get("message") or {}
+        text = msg.get("text")
+        mid  = msg.get("mid")
+        is_echo = bool(msg.get("is_echo"))
+        yield sender_id, text, mid, is_echo
+
+
+async def handle_text_message(sender_id: str, text: str, mid: str, is_echo: bool,
+                        business_ig_id: str, req_id: str | None = None):
+    """
+    Tek bir metin mesajını işler: guard'lar -> typing -> reply -> send.
+    messaging/changes her ikisi de bunu çağırır.
+    """
+    # --- Guard'lar ---
+    if is_echo:
+        return
+    if sender_id == business_ig_id or sender_id == PAGE_ID:
+        return
+    if not sender_id or not text:
+        return
+    if _seen_mid(mid):
+        return
+
+    # UX: kısa "yazıyor..." balonu
+    await typing_indicator(sender_id, req_id=req_id, duration=1.0)
+
+    # Temel cevap (istersen router'a geçeriz)
+    reply = basic_bot_reply(text)
+    send_text_message(sender_id, reply, req_id=req_id)
+
+
 def send_text_message(ig_sid: str, text: str, req_id: str | None = None):
     url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{PAGE_ID}/messages"
     params = {"access_token": PAGE_ACCESS_TOKEN}
@@ -213,12 +273,12 @@ def send_sender_action(ig_sid: str, action: str, req_id: str | None = None):
     payload = {"recipient": {"id": ig_sid}, "sender_action": action}
     return _graph_send_with_retry(url, params, payload, max_attempts=5, req_id=req_id)
 
-def typing_indicator(ig_sid: str, req_id: str | None = None, duration: float = 1.0):
+async def typing_indicator(ig_sid: str, req_id: str | None = None, duration: float = 1.0):
     """
     IG'de typing_on destekli. Balonun görünmesi için kısa bir süre açık tutuyoruz.
     """
     send_sender_action(ig_sid, "typing_on", req_id=req_id)
-    time.sleep(duration)  # 0.8–1.2s arası iyi bir aralık
+    await asyncio.sleep(duration)
     # istersen typing_off da atabilirsin; çoğu istemci otomatik söndürür:
     # send_sender_action(ig_sid, "typing_off", req_id=req_id)
 
@@ -273,68 +333,9 @@ async def webhook(req: Request):
         for entry in data.get("entry", []):
             business_ig_id = str(entry.get("id") or "")  # işletme IG SID (self-sender kontrolü için)
 
-            for event in entry.get("messaging", []):
-                sender_id = (event.get("sender") or {}).get("id")
-                msg = event.get("message") or {}
-                text = msg.get("text")
-                mid  = msg.get("mid")
-                is_echo = bool(msg.get("is_echo"))
-
-                # --- Guard'lar: neden? ---
-                # 1) echo ise: bu mesajı biz göndermişiz, platform bize "bilgi" amaçlı yansıtır → cevaplama
-                if is_echo:
-                    continue
-                # 2) kendimizsek: sender işletme IG (entry.id) veya Page ID ise kullanıcı değil → cevaplama
-                if sender_id == business_ig_id or sender_id == PAGE_ID:
-                    continue
-                # 3) metin değilse (read/delivery vb.): cevaplama
-                if not sender_id or not text:
-                    continue
-                # 4) aynı mid geldiyse (messaging + changes / retry): ikinci kez işlemeyi önle
-                if _seen_mid(mid):
-                    continue
-                
-                typing_indicator(sender_id, req_id=req_id, duration=1.0)
-
-                reply = basic_bot_reply(text)
+            for sender_id, text, mid, is_echo in iter_text_events(entry):
                 try:
-                    send_text_message(sender_id, reply, req_id=req_id)
-                except Exception as e:
-                    logger.exception(f"send_exc {e}")
-
-
-            for change in entry.get("changes", []):
-
-                # Sadece DM mesaj alanını dinle
-                if change.get("field") != "messages":
-                    continue
-
-                val = change.get("value") or {}
-                sender_id = (val.get("sender") or {}).get("id")
-                msg = val.get("message") or {}
-                text = msg.get("text")
-                mid = msg.get("mid")
-                is_echo = bool(msg.get("is_echo"))
-
-                # --- Guard'lar ---
-                # 1) echo ise: bizim gönderdiğimiz mesajın geri bildirimi → cevaplama
-                if is_echo:
-                    continue
-                # 2) kendimizsek: sender işletme IG (entry.id) veya Page ID ise kullanıcı değil → cevaplama
-                if sender_id == business_ig_id or sender_id == PAGE_ID:
-                    continue
-                # 3) metin yoksa (read/delivery vb.) → cevaplama
-                if not sender_id or not text:
-                    continue
-                # 4) aynı mid geldiyse (messaging + changes / retry) → ikinci kez işlemeyi önle
-                if _seen_mid(mid):
-                    continue
-
-                typing_indicator(sender_id, req_id=req_id, duration=1.0)
-
-                reply = basic_bot_reply(text)
-                try:
-                    send_text_message(sender_id, reply, req_id=req_id)
+                    await handle_text_message(sender_id, text, mid, is_echo, business_ig_id, req_id=req_id)
                 except Exception as e:
                     logger.exception(f"send_exc {e}")
 
