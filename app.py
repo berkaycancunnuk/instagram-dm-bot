@@ -35,6 +35,74 @@ if not VERIFY_TOKEN:
 if not APP_SECRET:
     raise RuntimeError("APP_SECRET not set in .env")
 
+# --- HTTP bağlantı havuzu + zaman aşımı (retry/backoff için temel) ---
+DEFAULT_TIMEOUT = (5, 10)  # (connect_timeout, read_timeout) saniye
+SESSION = requests.Session()
+
+def _parse_retry_after(resp) -> int:
+    """HTTP Retry-After varsa saniye olarak döndür; yoksa 0."""
+    ra = resp.headers.get("Retry-After")
+    try:
+        return int(ra)
+    except Exception:
+        return 0
+
+def _is_transient_http(status: int) -> bool:
+    """Geçici kabul ettiğimiz HTTP durumları."""
+    return status in (429, 502, 503, 504)
+
+def _is_transient_graph(data: dict) -> bool:
+    """Graph API error gövdesinden geçici hata sinyali."""
+    try:
+        err = data.get("error", {})
+        code = err.get("code")
+        # 1,2,4: internal/transient; 613: rate limit
+        return code in (1, 2, 4, 613)
+    except Exception:
+        return False
+
+def _sleep_backoff(attempt: int, retry_after: int):
+    """Retry öncesi bekleme: Retry-After varsa onu, yoksa exponential + jitter."""
+    if retry_after and retry_after > 0:
+        time.sleep(retry_after)
+        return
+    base = min(2 ** attempt, 32)      # 1,2,4,8,16,32 (cap 32s)
+    jitter = random.uniform(0, 0.5)   # küçük jitter
+    time.sleep(base + jitter)
+
+def _graph_send_with_retry(url: str, params: dict, payload: dict, max_attempts: int = 5):
+    for attempt in range(1, max_attempts + 1):
+        t0 = time.time()
+        resp = SESSION.post(url, params=params, json=payload, timeout=DEFAULT_TIMEOUT)
+        dur_ms = int((time.time() - t0) * 1000)
+
+        # JSON parse etmeye çalış
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"_nonjson": resp.text}
+
+        # Başarılıysa bitir
+        if resp.status_code < 400:
+            logger.info(f"send_ok status={resp.status_code} dur_ms={dur_ms} mid={data.get('message_id')}")
+            return resp.status_code, data
+
+        # Geçici hata mı?
+        retry_after = _parse_retry_after(resp)
+        transient = _is_transient_http(resp.status_code) or _is_transient_graph(data)
+
+        if transient and attempt < max_attempts:
+            logger.error(f"send_err_transient status={resp.status_code} attempt={attempt} dur_ms={dur_ms} body={data}")
+            _sleep_backoff(attempt, retry_after)
+            continue  # yeniden dene
+
+        # Geçici değilse (veya denemeler bitti ise): vazgeç
+        logger.error(f"send_err_non_retriable status={resp.status_code} dur_ms={dur_ms} body={data}")
+        return resp.status_code, data
+
+    # Teorik olarak buraya gelmez
+    return 599, {"error": "exhausted retries"}
+
 app = FastAPI()
 
 @app.get("/")
@@ -99,69 +167,12 @@ def _compute_backoff(attempt: int, base: float = 0.5, cap: float = 20.0) -> floa
     return expo + jitter
 # --- /R2 helpers ---
 
-def send_text_message(ig_sid: str, text: str, *, max_retries: int = 4):
-    """
-    IG kullanıcısına metin mesajı gönderir, 429/5xx için retry/backoff uygular.
-    Sözleşme: (status_code, data) döner.
-    """
+def send_text_message(ig_sid: str, text: str):
     url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{PAGE_ID}/messages"
     params = {"access_token": PAGE_ACCESS_TOKEN}
-    payload = {
-        "recipient": {"id": ig_sid},
-        "message": {"text": text}
-    }
-
-    last_status = None
-    last_data = None
-
-    for attempt in range(0, max_retries + 1):
-        t0 = time.perf_counter()
-        try:
-            # (connect timeout, read timeout)
-            r = requests.post(url, params=params, json=payload, timeout=(3.05, 10))
-            dur_ms = int((time.perf_counter() - t0) * 1000)
-
-            try:
-                data = r.json()
-            except Exception:
-                data = {"status": r.status_code, "text": r.text}
-
-            if r.status_code < 400:
-                logger.info(f"send_ok status={r.status_code} dur_ms={dur_ms} mid={data.get('message_id')}")
-                return r.status_code, data
-
-            # 429 & 5xx → retry
-            if r.status_code == 429 or 500 <= r.status_code <= 599:
-                ra = _parse_retry_after(r.headers.get("Retry-After"))
-                backoff = max(ra, _compute_backoff(attempt))
-                logger.warning(f"send_retry status={r.status_code} attempt={attempt} sleep={backoff:.2f}s dur_ms={dur_ms} body={data}")
-                time.sleep(backoff)
-                last_status, last_data = r.status_code, data
-                continue
-
-            # Diğer 4xx (non-retriable) → logla ve çık
-            logger.error(f"send_err_non_retriable status={r.status_code} dur_ms={dur_ms} body={data}")
-            return r.status_code, data
-
-        except requests.Timeout as e:
-            # timeout → retry
-            backoff = _compute_backoff(attempt)
-            logger.warning(f"send_timeout attempt={attempt} sleep={backoff:.2f}s exc={e}")
-            time.sleep(backoff)
-            last_status, last_data = 599, {"error": "timeout"}
-            continue
-
-        except Exception as e:
-            # ağ/diğer hata → retry dene
-            backoff = _compute_backoff(attempt)
-            logger.warning(f"send_exc attempt={attempt} sleep={backoff:.2f}s exc={repr(e)}")
-            time.sleep(backoff)
-            last_status, last_data = 598, {"error": repr(e)}
-            continue
-
-    # Tüm denemeler bitti
-    logger.error(f"send_fail_exhausted status={last_status} body={last_data}")
-    return last_status or 520, last_data or {"error": "exhausted"}
+    payload = {"recipient": {"id": ig_sid}, "message": {"text": text}}
+    # İstersen deneme sayısını parametrele: max_attempts=5
+    return _graph_send_with_retry(url, params, payload, max_attempts=5)
 
 @app.get("/webhook", response_class=PlainTextResponse)
 async def verify(req: Request):
