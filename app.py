@@ -204,6 +204,21 @@ def send_text_message(ig_sid: str, text: str, req_id: str | None = None):
     # İstersen deneme sayısını parametrele: max_attempts=5
     return _graph_send_with_retry(url, params, payload, max_attempts=5,req_id=req_id)
 
+def send_sender_action(ig_sid: str, action: str, req_id: str | None = None):
+    """
+    IG kullanıcısına sender_action (mark_seen / typing_on) gönder.
+    """
+    url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{PAGE_ID}/messages"
+    params = {"access_token": PAGE_ACCESS_TOKEN}
+    payload = {"recipient": {"id": ig_sid}, "sender_action": action}
+    return _graph_send_with_retry(url, params, payload, max_attempts=5, req_id=req_id)
+
+def mark_seen_and_typing(ig_sid: str, req_id: str | None = None):
+    # Hemen görüldü işareti ver
+    send_sender_action(ig_sid, "mark_seen", req_id=req_id)
+    # Ardından “yazıyor” göstergesi aç
+    send_sender_action(ig_sid, "typing_on", req_id=req_id)
+
 @app.get("/webhook", response_class=PlainTextResponse)
 async def verify(req: Request):
     """
@@ -275,6 +290,8 @@ async def webhook(req: Request):
                 # 4) aynı mid geldiyse (messaging + changes / retry): ikinci kez işlemeyi önle
                 if _seen_mid(mid):
                     continue
+                
+                mark_seen_and_typing(sender_id, req_id=req_id)
 
                 reply = basic_bot_reply(text)
                 try:
@@ -309,6 +326,8 @@ async def webhook(req: Request):
                 # 4) aynı mid geldiyse (messaging + changes / retry) → ikinci kez işlemeyi önle
                 if _seen_mid(mid):
                     continue
+
+                mark_seen_and_typing(sender_id, req_id=req_id)
 
                 reply = basic_bot_reply(text)
                 try:
