@@ -213,11 +213,14 @@ def send_sender_action(ig_sid: str, action: str, req_id: str | None = None):
     payload = {"recipient": {"id": ig_sid}, "sender_action": action}
     return _graph_send_with_retry(url, params, payload, max_attempts=5, req_id=req_id)
 
-def mark_seen_and_typing(ig_sid: str, req_id: str | None = None):
-    # Hemen görüldü işareti ver
-    send_sender_action(ig_sid, "mark_seen", req_id=req_id)
-    # Ardından “yazıyor” göstergesi aç
+def typing_indicator(ig_sid: str, req_id: str | None = None, duration: float = 1.0):
+    """
+    IG'de typing_on destekli. Balonun görünmesi için kısa bir süre açık tutuyoruz.
+    """
     send_sender_action(ig_sid, "typing_on", req_id=req_id)
+    time.sleep(duration)  # 0.8–1.2s arası iyi bir aralık
+    # istersen typing_off da atabilirsin; çoğu istemci otomatik söndürür:
+    # send_sender_action(ig_sid, "typing_off", req_id=req_id)
 
 @app.get("/webhook", response_class=PlainTextResponse)
 async def verify(req: Request):
@@ -291,7 +294,7 @@ async def webhook(req: Request):
                 if _seen_mid(mid):
                     continue
                 
-                mark_seen_and_typing(sender_id, req_id=req_id)
+                typing_indicator(sender_id, req_id=req_id, duration=1.0)
 
                 reply = basic_bot_reply(text)
                 try:
@@ -327,7 +330,7 @@ async def webhook(req: Request):
                 if _seen_mid(mid):
                     continue
 
-                mark_seen_and_typing(sender_id, req_id=req_id)
+                typing_indicator(sender_id, req_id=req_id, duration=1.0)
 
                 reply = basic_bot_reply(text)
                 try:
