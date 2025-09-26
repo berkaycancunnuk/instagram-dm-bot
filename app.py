@@ -1,17 +1,14 @@
-import hmac, hashlib, os, json, requests, logging
+import hmac, hashlib, os, json, requests, logging, time, random
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
 from dotenv import load_dotenv
 from collections import OrderedDict
+from email.utils import parsedate_to_datetime
 
 
 load_dotenv()
 PAGE_ID = os.getenv("PAGE_ID")
 PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
-
-# İsteğe bağlı koruma/log (önerilir)
-if not PAGE_ID or not PAGE_ACCESS_TOKEN:
-    print("WARN: PAGE_ID veya PAGE_ACCESS_TOKEN boş. Send API denemeleri başarısız olabilir.")
 
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 APP_SECRET   = os.getenv("APP_SECRET")          
@@ -26,6 +23,10 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s"
 )
 logger = logging.getLogger("igbot")
+
+# İsteğe bağlı koruma/log (önerilir)
+if not PAGE_ID or not PAGE_ACCESS_TOKEN:
+    logger.warning("PAGE_ID veya PAGE_ACCESS_TOKEN boş. Send API denemeleri başarısız olabilir.")
 
 
 # Güvenlik: ortam değişkeni yoksa erken patlat:
@@ -56,28 +57,6 @@ def verify_xhub_signature(app_secret: str, signature_header_256: str, body: byte
     
     return False
 
-def send_text_message(ig_sid: str, text: str):
-    """
-    IG kullanıcısına metin mesajı gönderir.
-    POST https://graph.facebook.com/{GRAPH_API_VERSION}/{PAGE_ID}/messages?access_token=...
-    """
-    url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{PAGE_ID}/messages"
-    params = {"access_token": PAGE_ACCESS_TOKEN}
-    payload = {
-        "recipient": {"id": ig_sid},
-        "message": {"text": text}
-    }
-    r = requests.post(url, params=params, json=payload, timeout=10)
-    try:
-        data = r.json()
-    except Exception:
-        data = {"status": r.status_code, "text": r.text}
-    if r.status_code >= 400:
-        logger.error(f"send_err status={r.status_code} body={data}")
-    else:
-        logger.info(f"send_ok status={r.status_code} body={data}")
-    return r.status_code, data
-
 # --- Dedup için basit LRU benzeri bir sözlük ---
 RECENT_MIDS = OrderedDict()
 
@@ -102,6 +81,87 @@ def basic_bot_reply(user_text: str) -> str:
     if "demo" in t or "deneme" in t:
         return "Kısa bir demo planlayalım: https://cal.com/senin-adin/15min"
     return "Anladım, biraz daha açabilir misiniz?"
+
+# --- R2 helpers: retry/backoff ---
+def _parse_retry_after(hval: str) -> float:
+    if not hval: return 0.0
+    hval = str(hval).strip()
+    if hval.isdigit(): return float(hval)
+    try:
+        dt = parsedate_to_datetime(hval)
+        return max(0.0, (dt - dt.now(dt.tzinfo)).total_seconds())
+    except Exception:
+        return 0.0
+
+def _compute_backoff(attempt: int, base: float = 0.5, cap: float = 20.0) -> float:
+    expo = min(cap, base * (2 ** attempt))
+    jitter = random.uniform(0, base)
+    return expo + jitter
+# --- /R2 helpers ---
+
+def send_text_message(ig_sid: str, text: str, *, max_retries: int = 4):
+    """
+    IG kullanıcısına metin mesajı gönderir, 429/5xx için retry/backoff uygular.
+    Sözleşme: (status_code, data) döner.
+    """
+    url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{PAGE_ID}/messages"
+    params = {"access_token": PAGE_ACCESS_TOKEN}
+    payload = {
+        "recipient": {"id": ig_sid},
+        "message": {"text": text}
+    }
+
+    last_status = None
+    last_data = None
+
+    for attempt in range(0, max_retries + 1):
+        t0 = time.perf_counter()
+        try:
+            # (connect timeout, read timeout)
+            r = requests.post(url, params=params, json=payload, timeout=(3.05, 10))
+            dur_ms = int((time.perf_counter() - t0) * 1000)
+
+            try:
+                data = r.json()
+            except Exception:
+                data = {"status": r.status_code, "text": r.text}
+
+            if r.status_code < 400:
+                logger.info(f"send_ok status={r.status_code} dur_ms={dur_ms} mid={data.get('message_id')}")
+                return r.status_code, data
+
+            # 429 & 5xx → retry
+            if r.status_code == 429 or 500 <= r.status_code <= 599:
+                ra = _parse_retry_after(r.headers.get("Retry-After"))
+                backoff = max(ra, _compute_backoff(attempt))
+                logger.warning(f"send_retry status={r.status_code} attempt={attempt} sleep={backoff:.2f}s dur_ms={dur_ms} body={data}")
+                time.sleep(backoff)
+                last_status, last_data = r.status_code, data
+                continue
+
+            # Diğer 4xx (non-retriable) → logla ve çık
+            logger.error(f"send_err_non_retriable status={r.status_code} dur_ms={dur_ms} body={data}")
+            return r.status_code, data
+
+        except requests.Timeout as e:
+            # timeout → retry
+            backoff = _compute_backoff(attempt)
+            logger.warning(f"send_timeout attempt={attempt} sleep={backoff:.2f}s exc={e}")
+            time.sleep(backoff)
+            last_status, last_data = 599, {"error": "timeout"}
+            continue
+
+        except Exception as e:
+            # ağ/diğer hata → retry dene
+            backoff = _compute_backoff(attempt)
+            logger.warning(f"send_exc attempt={attempt} sleep={backoff:.2f}s exc={repr(e)}")
+            time.sleep(backoff)
+            last_status, last_data = 598, {"error": repr(e)}
+            continue
+
+    # Tüm denemeler bitti
+    logger.error(f"send_fail_exhausted status={last_status} body={last_data}")
+    return last_status or 520, last_data or {"error": "exhausted"}
 
 @app.get("/webhook", response_class=PlainTextResponse)
 async def verify(req: Request):
