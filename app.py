@@ -1,9 +1,8 @@
 import hmac, hashlib, os, json, requests, logging, time, random, uuid
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, JSONResponse
 from dotenv import load_dotenv
 from collections import OrderedDict
-from email.utils import parsedate_to_datetime
 
 
 load_dotenv()
@@ -72,6 +71,35 @@ def _sleep_backoff(attempt: int, retry_after: int):
     jitter = random.uniform(0, 0.5)   # küçük jitter
     time.sleep(base + jitter)
 
+def _graph_smoke_check() -> dict:
+    """
+    Health amaçlı hafif kontrol:
+    - Page ID'yi token ile çekebiliyor muyuz?
+    - Ağ/HTTP/Graph hatalarını döndür.
+    """
+    url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{PAGE_ID}"
+    params = {"access_token": PAGE_ACCESS_TOKEN, "fields": "id"}
+    try:
+        t0 = time.time()
+        resp = SESSION.get(url, params=params, timeout=DEFAULT_TIMEOUT)
+        dur_ms = int((time.time() - t0) * 1000)
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"_nonjson": resp.text}
+
+        return {
+            "ok": resp.status_code == 200,
+            "status": resp.status_code,
+            "dur_ms": dur_ms,
+            "body": data,
+        }
+    except requests.Timeout:
+        return {"ok": False, "status": 599, "error": "timeout"}
+    except Exception as e:
+        return {"ok": False, "status": 598, "error": repr(e)}
+
+
 def _graph_send_with_retry(url: str, params: dict, payload: dict, max_attempts: int = 5, req_id: str | None = None):
     for attempt in range(1, max_attempts + 1):
         t0 = time.time()
@@ -110,6 +138,23 @@ app = FastAPI()
 @app.get("/")
 def root():
     return {"status": "ok"}
+
+@app.get("/healthz")
+def healthz(check: str | None = None):
+    """
+    Basit sağlık ucu:
+    - /healthz             -> {"status":"ok"}
+    - /healthz?check=graph -> Page token ve Graph çıkışı duman testi
+    """
+    if check == "graph":
+        result = _graph_smoke_check()
+        code = 200 if result.get("ok") else 503
+        return JSONResponse(
+            content={"status": "ok" if result.get("ok") else "fail", "graph": result},
+            status_code=code
+        )
+    return {"status": "ok"}
+
 
 def verify_xhub_signature(app_secret: str, signature_header_256: str, body: bytes, signature_header_1: str = None) -> bool:
     """
@@ -151,23 +196,6 @@ def basic_bot_reply(user_text: str) -> str:
     if "demo" in t or "deneme" in t:
         return "Kısa bir demo planlayalım: https://cal.com/senin-adin/15min"
     return "Anladım, biraz daha açabilir misiniz?"
-
-# --- R2 helpers: retry/backoff ---
-def _parse_retry_after(hval: str) -> float:
-    if not hval: return 0.0
-    hval = str(hval).strip()
-    if hval.isdigit(): return float(hval)
-    try:
-        dt = parsedate_to_datetime(hval)
-        return max(0.0, (dt - dt.now(dt.tzinfo)).total_seconds())
-    except Exception:
-        return 0.0
-
-def _compute_backoff(attempt: int, base: float = 0.5, cap: float = 20.0) -> float:
-    expo = min(cap, base * (2 ** attempt))
-    jitter = random.uniform(0, base)
-    return expo + jitter
-# --- /R2 helpers ---
 
 def send_text_message(ig_sid: str, text: str, req_id: str | None = None):
     url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{PAGE_ID}/messages"
