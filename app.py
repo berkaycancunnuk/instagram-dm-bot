@@ -1,4 +1,4 @@
-import hmac, hashlib, os, json, requests
+import hmac, hashlib, os, json, requests, logging
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
 from dotenv import load_dotenv
@@ -15,8 +15,18 @@ if not PAGE_ID or not PAGE_ACCESS_TOKEN:
 
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 APP_SECRET   = os.getenv("APP_SECRET")          
+
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v21.0")
 DEBUG = os.getenv("DEBUG", "0") == "1"   # <-- EKLEDİK
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s %(message)s"
+)
+logger = logging.getLogger("igbot")
+
 
 # Güvenlik: ortam değişkeni yoksa erken patlat:
 if not VERIFY_TOKEN:
@@ -63,9 +73,9 @@ def send_text_message(ig_sid: str, text: str):
     except Exception:
         data = {"status": r.status_code, "text": r.text}
     if r.status_code >= 400:
-        print("Send API ERROR:", r.status_code, data)  # ileride retry/backoff ekleriz
+        logger.error(f"send_err status={r.status_code} body={data}")
     else:
-        print("Send API OK:", data)
+        logger.info(f"send_ok status={r.status_code} body={data}")
     return r.status_code, data
 
 # --- Dedup için basit LRU benzeri bir sözlük ---
@@ -120,7 +130,7 @@ async def webhook(req: Request):
     # İmzaları görmek için debug (sadece DEBUG=1 iken)
     if DEBUG:
         expected = 'sha256=' + hmac.new(APP_SECRET.encode('utf-8'), raw, hashlib.sha256).hexdigest()
-        print("DEBUG SIG expected:", expected, "| sent:", (sig256 or sig1 or ""))
+        logger.debug(f"sig_expected={expected} sent={(sig256 or sig1 or '')}")
 
     # 2) İmza yanlışsa 403
     if not verify_xhub_signature(APP_SECRET, sig256, raw, sig1):
@@ -130,7 +140,7 @@ async def webhook(req: Request):
     try:
         data = await req.json()
         # istersen debug log:
-        print("INCOMING EVENT:", json.dumps(data)[:1000])
+        logger.info(f"in_event {json.dumps(data)[:1000]}")
     except Exception:
         return {"status": "ok"}
 
@@ -167,7 +177,7 @@ async def webhook(req: Request):
                 try:
                     send_text_message(sender_id, reply)
                 except Exception as e:
-                    print("Send exception:", repr(e))
+                    logger.exception(f"send_exc {e}")
 
 
             for change in entry.get("changes", []):
@@ -201,9 +211,9 @@ async def webhook(req: Request):
                 try:
                     send_text_message(sender_id, reply)
                 except Exception as e:
-                    print("Send exception:", repr(e))
+                    logger.exception(f"send_exc {e}")
 
         return {"status": "ok"}
     except Exception as e:
-        print("Parse exception:", repr(e), "payload:", json.dumps(data)[:1000])
+        logger.exception(f"parse_exc {e} payload={json.dumps(data)[:1000]}")
         return {"status": "ok"}
