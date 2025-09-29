@@ -5,6 +5,13 @@ from dotenv import load_dotenv
 from collections import OrderedDict
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
+# --- [PATCH A: YAML & template helpers] ---
+import yaml
+from pathlib import Path
+from string import Template
+
+FLOWS_PATH = Path(__file__).parent / "flows" / "default.yaml"
+FLOW = {}
 
 load_dotenv()
 PAGE_ID = os.getenv("PAGE_ID")
@@ -25,6 +32,52 @@ logging.basicConfig(
 logger = logging.getLogger("igbot")
 
 logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+# --- [PATCH B: YAML'dan config yükleme + saat yardımcıları] ---
+from zoneinfo import ZoneInfo
+TIMEZONE = ZoneInfo("Europe/Istanbul")  # istersen .env ile parametrize ederiz
+
+def load_flow():
+    """flows/default.yaml dosyasını belleğe yükle."""
+    global FLOW
+    try:
+        with open(FLOWS_PATH, "r", encoding="utf-8") as f:
+            FLOW = yaml.safe_load(f) or {}
+        logger.info(f"Flow loaded from {FLOWS_PATH}")
+    except Exception as e:
+        logger.error(f"Flow load error: {e}")
+        FLOW = {}
+
+def conf_brand():
+    return (FLOW.get("brand") or "YourBot")
+
+def conf_cal_link():
+    return (FLOW.get("cal_link") or "https://cal.com/yourname/15min")
+
+def conf_hours():
+    """YAML'daki business_hours'tan start/end saatlerini al."""
+    bh = FLOW.get("business_hours") or {}
+    start = int(bh.get("start", 9))
+    end   = int(bh.get("end", 18))
+    return start, end
+
+def now_in_tz():
+    return datetime.now(TIMEZONE)
+
+def is_business_hours():
+    start, end = conf_hours()
+    h = now_in_tz().hour
+    return start <= h < end
+
+def render_double_brace(text: str, data: dict) -> str:
+    """'{{key}}' yer tutucularını data[key] ile değiştirir."""
+    out = text or ""
+    for k, v in (data or {}).items():
+        out = out.replace(f"{{{{{k}}}}}", str(v))
+    return out
+
+# Uygulama ayağa kalkarken YAML'ı bir kez yükle
+load_flow()
 
 # İsteğe bağlı koruma/log (önerilir)
 if not PAGE_ID or not PAGE_ACCESS_TOKEN:

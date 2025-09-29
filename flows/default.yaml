@@ -1,0 +1,56 @@
+brand: "YourBot"
+cal_link: "https://cal.com/yourname/15min"
+
+business_hours:
+  start: 9
+  end: 18
+
+menu:
+  items:
+    - "/lead – İhtiyaç formu"
+    - "/demo – 15dk görüşme"
+    - "/fiyat – Paketler"
+    - "/human – Canlı destek"
+  header: |
+    {brand} Menü:
+  footer: ""
+
+faq:
+  - keys: ["fiyat","ücret","price","paket"]
+    reply: |
+      Paketlerimiz:
+      - Starter: Aylık 49$ — temel SSS + lead formu
+      - Mid: 149$ — hafıza + entegrasyonlar
+      - Premium: 299$ — gelişmiş akışlar
+    cta: "/lead"
+
+lead:
+  steps:
+    - id: q1
+      ask: "Sizi tanıyalım 🙌 Adınız ve işletme adınız nedir?"
+      save_as: who
+    - id: q2
+      ask: "Chatbot’u en çok hangi amaçla kullanmak istiyorsunuz? (satış/SSS/randevu/destek)"
+      save_as: need
+    - id: q3
+      ask: "Size ulaşabileceğimiz e-posta ya da WhatsApp numarası?"
+      save_as: contact
+  summary_header: "Harika! 🎯 Aşağıdaki bilgileri aldım:"
+  summary: |
+    • Kişi/İşletme: {{who}}
+    • İhtiyaç: {{need}}
+    • İletişim: {{contact}}
+  after: |
+    Ekibimiz en kısa sürede dönüş yapacak.
+    {{offhours_note}}
+    İsterseniz kısa bir demo planlayalım: {cal_link}
+
+fallback:
+  in_hours: |
+    Anladım. Şöyle ilerleyebiliriz:
+    • Paketler: /fiyat
+    • Demo: /demo
+    • İhtiyaç bırak: /lead
+  off_hours: |
+    Şu an iş saatleri dışında olabiliriz.
+    /lead yazarak bilgilerinizi bırakırsanız ilk iş dönüş yaparız. 🙏
