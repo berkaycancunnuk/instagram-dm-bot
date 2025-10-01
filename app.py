@@ -4,7 +4,7 @@ from fastapi.responses import PlainTextResponse, JSONResponse
 from dotenv import load_dotenv
 from collections import OrderedDict
 from email.utils import parsedate_to_datetime
-from datetime import datetime
+from datetime import datetime, timezone
 # --- [PATCH A: YAML & template helpers] ---
 import yaml
 from pathlib import Path
@@ -107,7 +107,7 @@ def _parse_retry_after(resp) -> int:
         return int(ra)
     try:
         dt = parsedate_to_datetime(ra)
-        now = datetime.now(dt.tzinfo or TIMEZONE)
+        now = datetime.now(dt.tzinfo or timezone.utc)
         return max(0, int((dt - now).total_seconds()))
     except Exception:
         return 0
