@@ -208,8 +208,9 @@ def root():
 def healthz(check: str | None = None):
     """
     Basit sağlık ucu:
-    - /healthz             -> {"status":"ok"}
-    - /healthz?check=graph -> Page token ve Graph çıkışı duman testi
+    - /healthz                 -> {"status":"ok"}
+    - /healthz?check=graph     -> Page token ve Graph çıkışı duman testi
+    - /healthz?check=sheets    -> Google Sheets webhook'una self-test POST
     """
     if check == "graph":
         result = _graph_smoke_check()
@@ -218,6 +219,22 @@ def healthz(check: str | None = None):
             content={"status": "ok" if result.get("ok") else "fail", "graph": result},
             status_code=code
         )
+
+    if check == "sheets":
+        # IG akışını beklemeden doğrudan Sheets webhook'unu dener
+        from integrations.sinks import post_lead_to_sheets
+        res = post_lead_to_sheets(
+            user_id="selftest",
+            brand=conf_brand(),
+            source="selftest",
+            lead_dict={"who": "Self Test", "need": "ping", "contact": "-"}
+        )
+        code = 200 if res.get("ok") else 503
+        return JSONResponse(
+            content={"status": "ok" if res.get("ok") else "fail", "result": res},
+            status_code=code
+        )
+
     return {"status": "ok"}
 
 
