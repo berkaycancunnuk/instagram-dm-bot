@@ -237,6 +237,206 @@ def verify_xhub_signature(app_secret: str, signature_header_256: str, body: byte
 # --- Dedup için basit LRU benzeri bir sözlük ---
 RECENT_MIDS = OrderedDict()
 
+# --- [PATCH S1: Basit oturum / session store] ---
+from time import time as _now
+
+SESSIONS = {}           # { user_id: {"state": "idle"|"lead.active", "data": {...}, "ts": epoch, "lead_i": idx} }
+SESSION_TTL = 60 * 60   # 1 saat
+
+def get_session(uid: str):
+    s = SESSIONS.get(uid)
+    if not s or (_now() - s.get("ts", 0) > SESSION_TTL):
+        s = {"state": "idle", "data": {}, "ts": _now(), "lead_i": 0}
+        SESSIONS[uid] = s
+    return s
+
+def set_state(uid: str, state: str):
+    s = get_session(uid)
+    s["state"] = state
+    s["ts"] = _now()
+    return s
+
+def set_kv(uid: str, key: str, val):
+    s = get_session(uid)
+    # "lead_data.x" gibi noktalı anahtarları destekleyelim
+    if "." in key:
+        head, tail = key.split(".", 1)
+        if head not in s["data"]:
+            s["data"][head] = {}
+        s["data"][head][tail] = val
+    else:
+        s["data"][key] = val
+    s["ts"] = _now()
+    return s
+
+# --- [PATCH C: Menü + SSS + Lead (YAML kaynaklı Router)] ---
+
+# Kullanıcının son mesaj saatini izleriz (24h pencere için ileride kullanacağız)
+LAST_USER_TS = {}  # { user_id: epoch_seconds }
+
+def menu_text():
+    """
+    YAML'daki menu.header / menu.items / menu.footer'ı birleştirir.
+    {brand} ve {cal_link} tek-süslü yer tutucularını str.format ile doldurur.
+    """
+    cfg = FLOW.get("menu") or {}
+    header = (cfg.get("header") or "{brand} Menü:").format(
+        brand=conf_brand(), cal_link=conf_cal_link()
+    )
+    items = "\n".join(cfg.get("items") or [])
+    footer = (cfg.get("footer") or "").format(
+        brand=conf_brand(), cal_link=conf_cal_link()
+    )
+    return "\n".join([header, items, footer]).strip()
+
+def try_faq_reply(text: str):
+    """
+    YAML'daki faq listesinde keys alanlarına göre anahtar eşleşmesi yapar.
+    Eşleşirse reply'i döner; {brand}/{cal_link} tek-süslü alanlarını doldurur.
+    CTA varsa en sona 'Devam: <cta>' ekler.
+    """
+    faqs = FLOW.get("faq") or []
+    t = (text or "").lower()
+    for f in faqs:
+        keys = [k.lower() for k in (f.get("keys") or [])]
+        if any(k in t for k in keys):
+            base = (f.get("reply") or "").format(
+                brand=conf_brand(), cal_link=conf_cal_link()
+            )
+            cta = f.get("cta")
+            return base + (f"\n\nDevam: {cta}" if cta else "")
+    return None
+
+def start_lead(uid: str):
+    """
+    Lead akışını başlatır: lead_i = 0 ayarlanır, first question sorulur.
+    adımlar YAML: lead.steps altında; ask/save_as alanları vardır.
+    """
+    s = get_session(uid)
+    s["lead_i"] = 0
+    s["lead_data"] = {}
+    set_state(uid, "lead.active")
+
+    steps = ((FLOW.get("lead") or {}).get("steps") or [])
+    if not steps:
+        set_state(uid, "idle")
+        return "Lead formu şu an kapalı görünüyor."
+
+    # İlk soruyu sor
+    return steps[0].get("ask") or "Başlayalım: adınızı alabilir miyim?"
+
+def progress_lead(uid: str, incoming_text: str):
+    """
+    Lead akışını ilerletir:
+    - O anki adımın save_as'ı varsa gelen metni kaydeder
+    - Bir sonraki adıma geçer; bittiğinde özet + after metnini oluşturur
+    - Özet içinde {{who}} gibi çift-süslü alanlar lead_data ile doldurulur
+    - after içinde {brand} / {cal_link} tek-süslü alanlar str.format ile doldurulur
+    """
+    s = get_session(uid)
+    steps = ((FLOW.get("lead") or {}).get("steps") or [])
+    i = int(s.get("lead_i", 0))
+
+    # Geçerli adımı kaydet
+    if 0 <= i < len(steps):
+        save_as = steps[i].get("save_as")
+        if save_as:
+            set_kv(uid, f"lead_data.{save_as}", (incoming_text or "").strip())
+            s = get_session(uid)  # referansı yenile
+
+    # Bir sonraki adıma geç
+    i += 1
+    s["lead_i"] = i
+
+    # Sıradaki soru varsa onu sor
+    if i < len(steps):
+        return steps[i].get("ask") or "Devam edelim…"
+
+    # Akış bitti → özetle ve state'i idle'a döndür
+    lead_cfg = (FLOW.get("lead") or {})
+    data = s.get("data") or {}
+    lead_data = data.get("lead_data") or {}
+
+    # İş saati durumuna göre kısa not
+    off_note = "Şu an iş saatleri dışında olabiliriz. " if not is_business_hours() else ""
+
+    header = (lead_cfg.get("summary_header") or "Özet:")
+    summary_tpl = (lead_cfg.get("summary") or "").strip()
+    # Çift-süslü {{who}} gibi alanları lead_data ile doldur
+    summary = render_double_brace(summary_tpl, lead_data)
+
+    # after metnindeki {brand}/{cal_link} alanlarını doldur
+    after = (lead_cfg.get("after") or "").format(
+        brand=conf_brand(),
+        cal_link=conf_cal_link()
+    )
+    # after içinde {{offhours_note}} varsa onu da yerleştir
+    after = after.replace("{{offhours_note}}", off_note)
+
+    set_state(uid, "idle")
+    return f"{header}\n{summary}\n\n{after}".strip()
+
+def respond(uid: str, text: str) -> str:
+    """
+    Router'ın kalbi:
+    1) Eğer kullanıcı lead akışındaysa -> progress_lead
+    2) Komutlar: /menu, /lead, /demo, /fiyat, /help, /human
+    3) Serbest metinde önce FAQ eşleşmesi
+    4) İş saati dışı fallback
+    5) Genel fallback (iş saati içi)
+    """
+    s = get_session(uid)
+
+    # 1) Lead akışı aktifse önce onu ilerlet
+    if s["state"] == "lead.active":
+        return progress_lead(uid, text)
+
+    t = (text or "").strip().lower()
+
+    # 2) Komutlar
+    if t in ("/start", "/menu"):
+        return menu_text()
+
+    if t in ("/lead",):
+        return start_lead(uid)
+
+    if t in ("/demo", "randevu", "call", "meeting"):
+        return (
+            f"Kısa bir demo ayarlayalım: {conf_cal_link()}\n"
+            f"{'Not: Şu an iş saatleri dışında olabiliriz.' if not is_business_hours() else ''}"
+        )
+
+    if t in ("/fiyat", "/price", "fiyat", "ücret", "paket", "price"):
+        ans = try_faq_reply("fiyat")
+        return ans or "Paket bilgileri için birazdan güncelleyeceğiz."
+
+    if t in ("/help", "yardım"):
+        return menu_text()
+
+    if t in ("/human", "insan", "canlı", "müşteri temsilcisi"):
+        # v1: sadece bilgilendir. Sprint-2’de gerçek handover çağrısı eklenecek.
+        return (
+            "Talebinizi canlı destek ekibine iletiyoruz. "
+            "Bu arada /lead ile temel bilgileri paylaşırsanız daha hızlı dönüş yapabiliriz."
+        )
+
+    # 3) Serbest metinde FAQ dene
+    faq = try_faq_reply(text)
+    if faq:
+        return faq
+
+    # 4) İş saati dışı fallback
+    if not is_business_hours():
+        fb = (FLOW.get("fallback") or {}).get("off_hours") or \
+             "Şu an iş saatleri dışında olabiliriz. /lead bırakabilirsiniz."
+        return fb
+
+    # 5) Genel fallback (iş saati içi)
+    fb = (FLOW.get("fallback") or {}).get("in_hours") or \
+         "Anladım. /fiyat, /demo veya /lead ile ilerleyebiliriz."
+    return fb
+
+
 def _seen_mid(mid: str, cap: int = 1000) -> bool:
     """Aynı mesajı iki kez işlemeyi engelle (hem messaging hem changes döngüsünde yakalarsan)."""
     if not mid:
@@ -247,17 +447,6 @@ def _seen_mid(mid: str, cap: int = 1000) -> bool:
     if len(RECENT_MIDS) > cap:
         RECENT_MIDS.popitem(last=False)
     return False
-
-
-def basic_bot_reply(user_text: str) -> str:
-    t = (user_text or "").strip().lower()
-    if any(k in t for k in ["merhaba", "selam", "hi", "hello"]):
-        return "Selam! Nasıl yardımcı olabilirim? 😊"
-    if "fiyat" in t or "ücret" in t or "price" in t:
-        return "Fiyatlarımız paketlere göre değişiyor. Starter paket aylık 49$. Detay ister misiniz?"
-    if "demo" in t or "deneme" in t:
-        return "Kısa bir demo planlayalım: https://cal.com/senin-adin/15min"
-    return "Anladım, biraz daha açabilir misiniz?"
 
 def iter_text_events(entry: dict):
     """
@@ -302,11 +491,14 @@ async def handle_text_message(sender_id: str, text: str, mid: str, is_echo: bool
     if _seen_mid(mid):
         return
 
+    # 24h pencere izleme: kullanıcıdan mesaj gelir gelmez işaretle
+    LAST_USER_TS[sender_id] = int(time.time())
+
     # UX: kısa "yazıyor..." balonu
     await typing_indicator(sender_id, req_id=req_id, duration=1.0)
 
     # Temel cevap (istersen router'a geçeriz)
-    reply = basic_bot_reply(text)
+    reply = respond(sender_id, text)
     send_text_message(sender_id, reply, req_id=req_id)
 
 
