@@ -125,67 +125,71 @@ class RespondEngine:
 
         return {"text": steps[0].get("ask") or "Başlayalım: adınızı alabilir miyim?", "quick_replies": self.lead_next_qr()}
 
-def progress_lead(self, uid: str, incoming_text: str) -> Dict[str, Any]:
-    s = self.get_session(uid)
-    steps = ((self.FLOW.get("lead") or {}).get("steps") or [])
-    i = int(s.get("lead_i", 0))
+    def progress_lead(self, uid: str, incoming_text: str) -> Dict[str, Any]:
+        s = self.get_session(uid)
+        steps = ((self.FLOW.get("lead") or {}).get("steps") or [])
+        i = int(s.get("lead_i", 0))
 
-    # 1) Bu adımdaki cevabı kaydet
-    if 0 <= i < len(steps):
-        save_as = steps[i].get("save_as")
-        if save_as:
-            self.set_kv(uid, f"lead_data.{save_as}", (incoming_text or "").strip())
-            s = self.get_session(uid)
+        # 1) Bu adımdaki cevabı kaydet
+        if 0 <= i < len(steps):
+            save_as = steps[i].get("save_as")
+            if save_as:
+                self.set_kv(uid, f"lead_data.{save_as}", (incoming_text or "").strip())
+                s = self.get_session(uid)
 
-    # 2) Sonraki adıma geç
-    i += 1
-    s["lead_i"] = i
+        # 2) Sonraki adıma geç
+        i += 1
+        s["lead_i"] = i
 
-    # 3) Hâlâ soru varsa sor ve küçük QR’ları göster
-    if i < len(steps):
+        # 3) Hâlâ soru varsa sor ve küçük QR’ları göster
+        if i < len(steps):
+            return {
+                "text": steps[i].get("ask") or "Devam edelim…",
+                "quick_replies": self.lead_next_qr()
+            }
+
+        # 4) Akış bitti → özet+after hazırla
+        lead_cfg = (self.FLOW.get("lead") or {})
+        data = s.get("data") or {}
+        lead_data = data.get("lead_data") or {}
+
+        off_note = "Şu an iş saatleri dışında olabiliriz. " if not self.is_business_hours() else ""
+
+        header = (lead_cfg.get("summary_header") or "Özet:")
+        summary_tpl = (lead_cfg.get("summary") or "").strip()
+        summary = self.render_double_brace(summary_tpl, lead_data)
+
+        after = (lead_cfg.get("after") or "").format(
+            brand=self.conf_brand(),
+            cal_link=self.conf_cal_link()
+        )
+        after = after.replace("{{offhours_note}}", off_note).replace("{offhours_note}", off_note)
+
+        # 5) State’i kapat
+        self.set_state(uid, "idle")
+
+        # 6) Sheets’e POST at  ✅ (imzayı anahtar argümanlarla ver)
+        try:
+            post_lead_to_sheets(
+                user_id=uid,
+                brand=self.conf_brand(),
+                source="instagram",
+                lead_dict={
+                    "who": lead_data.get("who", ""),
+                    "need": lead_data.get("need", ""),
+                    "contact": lead_data.get("contact", "")
+                }
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger("igbot").warning(f"Sheets sink post failed: {e}")
+
+
+        # 7) Kullanıcıya final mesajı + ana menü QR’ları
         return {
-            "text": steps[i].get("ask") or "Devam edelim…",
-            "quick_replies": self.lead_next_qr()
+            "text": f"{header}\n{summary}\n\n{after}".strip(),
+            "quick_replies": self.menu_qr()
         }
-
-    # 4) Akış bitti → özet+after hazırla
-    lead_cfg = (self.FLOW.get("lead") or {})
-    data = s.get("data") or {}
-    lead_data = data.get("lead_data") or {}
-
-    off_note = "Şu an iş saatleri dışında olabiliriz. " if not self.is_business_hours() else ""
-
-    header = (lead_cfg.get("summary_header") or "Özet:")
-    summary_tpl = (lead_cfg.get("summary") or "").strip()
-    summary = self.render_double_brace(summary_tpl, lead_data)
-
-    after = (lead_cfg.get("after") or "").format(
-        brand=self.conf_brand(),
-        cal_link=self.conf_cal_link()
-    )
-    after = after.replace("{{offhours_note}}", off_note)
-
-    # 5) State’i kapat
-    self.set_state(uid, "idle")
-
-    # 6) >>> BURASI YENİ: Sheets’e POST at <<<
-    try:
-        lead_payload = {
-            "who": lead_data.get("who", ""),
-            "need": lead_data.get("need", ""),
-            "contact": lead_data.get("contact", "")
-        }
-        # user_id olarak IG sender_id (uid) gönderiyoruz
-        post_lead_to_sheets(uid, self.conf_brand(), lead_payload, source="instagram")
-    except Exception as e:
-        import logging
-        logging.getLogger("igbot").warning(f"Sheets sink post failed: {e}")
-
-    # 7) Kullanıcıya final mesajı + ana menü QR’ları
-    return {
-        "text": f"{header}\n{summary}\n\n{after}".strip(),
-        "quick_replies": self.menu_qr()
-    }
 
     # ---------- Main Router ----------
     def respond(self, uid: str, text: str, quick_payload: str | None = None) -> Dict[str, Any]:
