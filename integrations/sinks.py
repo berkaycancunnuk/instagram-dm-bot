@@ -1,72 +1,43 @@
 # integrations/sinks.py
-import os, time, json, logging, requests
-from typing import Dict, Any
+import os
+import json
+import logging
+import requests
 
-log = logging.getLogger("igbot.sink")
+logger = logging.getLogger("igbot")
 
-SHEETS_WEBHOOK_URL = os.getenv("SHEETS_WEBHOOK_URL", "").strip()
-WEBHOOK_SECRET     = os.getenv("WEBHOOK_SECRET", "").strip()
+SHEETS_WEBHOOK_URL = os.getenv("SHEETS_WEBHOOK_URL")
+WEBHOOK_SECRET     = os.getenv("WEBHOOK_SECRET")
 
-DEFAULT_TIMEOUT = (5, 10)  # connect, read
+# Ayrı session ve timeout: yeniden kullanım + daha hızlı
+_SESSION = requests.Session()
+_TIMEOUT = (5, 10)  # (connect, read) saniye
 
-def _post_json(url: str, payload: Dict[str, Any], headers: Dict[str, str] | None = None, max_attempts: int = 3):
+def post_lead_to_sheets(user_id: str, brand: str, source: str, lead_dict: dict) -> dict:
     """
-    Küçük bir retry ile JSON POST. 429/5xx'larda kısa bekleme ile tekrar dener.
+    Google Apps Script (Web App) uç noktasına lead kaydı gönderir.
+    Env:
+      - SHEETS_WEBHOOK_URL = https://script.google.com/macros/s/.../exec
+      - WEBHOOK_SECRET     = server-side shared secret
     """
-    if not url:
-        log.info("Sheets sink disabled (no SHEETS_WEBHOOK_URL). Skip.")
-        return {"ok": False, "skipped": True}
+    if not SHEETS_WEBHOOK_URL:
+        logger.warning("sheets_skip: SHEETS_WEBHOOK_URL empty")
+        return {"ok": False, "skip": "no url"}
 
-    hdrs = {"Content-Type": "application/json"}
-    if headers:
-        hdrs.update(headers)
-
-    body = json.dumps(payload, ensure_ascii=False)
-    for attempt in range(1, max_attempts + 1):
-        try:
-            resp = requests.post(url, headers=hdrs, data=body, timeout=DEFAULT_TIMEOUT)
-            if resp.status_code < 400:
-                # Apps Script genelde text döndürür; JSON parse etmeye çalışıp düşerse text’i döndür.
-                try:
-                    return {"ok": True, "status": resp.status_code, "json": resp.json()}
-                except Exception:
-                    return {"ok": True, "status": resp.status_code, "text": resp.text}
-            # Geçici hata ise tekrar dene
-            if resp.status_code in (429, 502, 503, 504) and attempt < max_attempts:
-                time.sleep(1.0 * attempt)
-                continue
-            # Kalıcı hata
-            log.error(f"Sheets sink failed status={resp.status_code} text={resp.text[:300]}")
-            return {"ok": False, "status": resp.status_code, "text": resp.text[:300]}
-        except requests.RequestException as e:
-            if attempt < max_attempts:
-                time.sleep(1.0 * attempt)
-                continue
-            log.exception(f"Sheets sink exception: {e}")
-            return {"ok": False, "error": repr(e)}
-    return {"ok": False, "error": "exhausted"}
-
-def post_lead_to_sheets(user_id: str, brand: str, lead: Dict[str, Any], source: str = "instagram"):
-    """
-    Lead bittiğinde çağır. Apps Script Web App URL’ine JSON gönderir.
-    Sheet tarafında şu alanları kaydetmek yaygın:
-      user_id, brand, source, who, need, contact, ts
-    """
     payload = {
         "user_id": user_id,
-        "brand": brand,
-        "source": source,
-        "lead": {
-            "who": lead.get("who", ""),
-            "need": lead.get("need", ""),
-            "contact": lead.get("contact", "")
-        },
-        "ts": int(time.time()),
-        "secret": WEBHOOK_SECRET or ""
+        "brand"  : brand,
+        "source" : source,
+        "lead"   : lead_dict or {},
+        "secret" : WEBHOOK_SECRET or "",
     }
-    # İstersen secret'ı header’da da taşırız; Apps Script tarafında X-Webhook-Secret başlığını da okuyabilirsin.
-    headers = {}
-    if WEBHOOK_SECRET:
-        headers["X-Webhook-Secret"] = WEBHOOK_SECRET
 
-    return _post_json(SHEETS_WEBHOOK_URL, payload, headers=headers)
+    try:
+        resp = _SESSION.post(SHEETS_WEBHOOK_URL, json=payload, timeout=_TIMEOUT)
+        # Yanıtı logla (kısaltıp)
+        body_snip = (resp.text or "")[:300].replace("\n", " ")
+        logger.info(f"sheets_post status={resp.status_code} body_snip={body_snip}")
+        return {"ok": resp.status_code == 200, "status": resp.status_code, "body": body_snip}
+    except Exception as e:
+        logger.exception(f"sheets_exc {e}")
+        return {"ok": False, "error": repr(e)}
