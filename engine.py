@@ -31,6 +31,13 @@ class RespondEngine:
         self.LAST_USER_TS: Dict[str, int] = {}
         self.SESSION_TTL = 60 * 60  # 1 saat
 
+    def reload_flow(self, new_flow: Dict[str, Any]):
+        """
+        Hot-reload için: dışarıdan güncel FLOW sözlüğünü al ve referansı güncelle.
+        """
+        self.FLOW = new_flow or {}
+    
+    
         # ---------- Validators ----------
     def _is_valid_email(self, s: str) -> bool:
         """

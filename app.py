@@ -1,5 +1,5 @@
 import hmac, hashlib, os, json, requests, logging, time, random, uuid, asyncio
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.responses import PlainTextResponse, JSONResponse
 from dotenv import load_dotenv
 from collections import OrderedDict
@@ -21,7 +21,8 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 APP_SECRET   = os.getenv("APP_SECRET")          
 
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v21.0")
-DEBUG = os.getenv("DEBUG", "0") == "1"   # <-- EKLEDİK
+DEBUG = os.getenv("DEBUG", "0") == "1"
+ADMIN_RELOAD_SECRET = os.getenv("ADMIN_RELOAD_SECRET", "")
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
@@ -279,6 +280,32 @@ def healthz(check: str | None = None):
         )
 
     return {"status": "ok"}
+
+@app.get("/admin/reload")
+def admin_reload(secret: str = Query(default="")):
+    """
+    Hot-reload: flows/default.yaml'ı yeniden oku ve ENGINE'e aktar.
+    Kullanım:
+      GET /admin/reload?secret=YOUR_SECRET
+    """
+    # 1) Secret kontrolü
+    if not ADMIN_RELOAD_SECRET:
+        return JSONResponse(content={"ok": False, "error": "reload disabled"}, status_code=403)
+    if secret != ADMIN_RELOAD_SECRET:
+        return JSONResponse(content={"ok": False, "error": "forbidden"}, status_code=403)
+
+    # 2) YAML tekrar oku ve engine'e ver
+    load_flow()            # FLOW global'ini günceller
+    ENGINE.FLOW = FLOW     # engine'e güncel referansı geçir
+
+    # 3) watcher ile senkron için mtime'ı güncelle
+    global FLOW_MTIME
+    FLOW_MTIME = _flow_mtime()
+
+    # 4) Küçük bir özet döndür
+    brand = FLOW.get("brand")
+    faq_count = len(FLOW.get("faq") or [])
+    return {"ok": True, "brand": brand, "faq_count": faq_count, "mtime": FLOW_MTIME}
 
 
 def verify_xhub_signature(app_secret: str, signature_header_256: str, body: bytes, signature_header_1: str = None) -> bool:
