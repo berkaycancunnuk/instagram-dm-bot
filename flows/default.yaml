@@ -60,7 +60,7 @@ lead:
   summary: |
     • Kişi/İşletme: {{who}}
     • İhtiyaç: {{need}}
-    • İletişim: {{contact}}
+    • İletişim Bilgisi: {{contact}}
   after: |
     Ekibimiz en kısa sürede size geri dönüş sağlayacak.
     Değerli vaktinizi ayırdığınız için çok teşekkürler.
@@ -74,4 +74,4 @@ fallback:
     • Teklif / İletişim Bırak
   off_hours: |
     Şu an mesai saatleri dışında olabiliriz.
-    Ekibimizin size hızlıca geri dönüş sağlaması için 'Teklif / İletişim' seçeneğine dokunabilirsiniz.
+    Ekibimizin size hızlıca geri dönüş sağlaması için 'Teklif / İletişim Bırak' seçeneğine dokunabilirsiniz.

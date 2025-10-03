@@ -116,10 +116,10 @@ class RespondEngine:
     def menu_qr(self) -> List[Dict[str, str]]:
         """Ana giriş seçenekleri (sektör-agnostik)."""
         return [
-            self._qr("Paketler", "UI:PRICING"),
-            self._qr("Randevu Al", "UI:DEMO"),
-            self._qr("İhtiyacımı İlet", "UI:LEAD"),
-            self._qr("Canlı Destek", "UI:HUMAN"),
+            self._qr("Paketler & Fiyat", "UI:PRICING"),
+            self._qr("Randevu / Demo Al", "UI:DEMO"),
+            self._qr("Teklif / İletişim Bırak", "UI:LEAD"),
+            self._qr("Soru Sor / SSS", "UI:FAQ"),
         ]
 
     def lead_next_qr(self) -> List[Dict[str, str]]:
@@ -128,6 +128,16 @@ class RespondEngine:
             self._qr("Devam", "UI:LEAD_CONT"),
             self._qr("Vazgeç", "UI:LEAD_CANCEL"),
         ]
+
+        # ---------- Flow helpers ----------
+    def _hours_from_flow(self) -> tuple[int, int]:
+        bh = (self.FLOW.get("business_hours") or {})
+        try:
+            start = int(bh.get("start", 9))
+            end   = int(bh.get("end", 18))
+        except Exception:
+            start, end = 9, 18
+        return start, end
 
     # ---------- Content Builders (YAML) ----------
     def menu_text(self) -> str:
@@ -147,8 +157,12 @@ class RespondEngine:
         for f in faqs:
             keys = [k.lower() for k in (f.get("keys") or [])]
             if any(k in t for k in keys):
+                start_h, end_h = self._hours_from_flow()
                 base = (f.get("reply") or "").format(
-                    brand=self.conf_brand(), cal_link=self.conf_cal_link()
+                    brand=self.conf_brand(), 
+                    cal_link=self.conf_cal_link(),
+                    start=start_h,
+                    end=end_h
                 )
                 cta = f.get("cta")
                 return base + (f"\n\nDevam için dokunun: Paketler" if cta == "/lead" else "")
@@ -271,6 +285,11 @@ class RespondEngine:
             if qp == "UI:HUMAN":
                 # v1: bilgilendir; v1.2’de handover ekleyeceğiz
                 return {"text": "Canlı destek talebinizi ilettik. Bu arada ihtiyaçlarınızı kısaca /lead ile paylaşabilirsiniz.", "quick_replies": self.menu_qr()}
+            if qp == "UI:FAQ":
+                hint = (
+                    "Sorunuzu yazabilirsiniz; örneğin: 'adres', 'çalışma saatleri', 'iade', 'teslimat'..."
+                )
+                return {"text": hint, "quick_replies": self.menu_qr()}            
             if qp == "UI:LEAD_CONT":
                 # lead içinde zaten progress çağrısı yapılacak; burada menüye dönmeyelim
                 pass
@@ -292,7 +311,7 @@ class RespondEngine:
                 return {"text": fb, "quick_replies": self.menu_qr()}
             # iş saatleri içindeyse standart selamlama
             greet = (
-                "Merhaba! 👋 Size en hızlı nasıl yardımcı olabilirim?\n"
+                "Merhaba! 👋 Size en hızlı nasıl yardımcı olabiliriz?\n"
                 "Aşağıdaki seçeneklerden birini dokunarak seçebilirsiniz."
             )
             return {"text": greet, "quick_replies": self.menu_qr()}
