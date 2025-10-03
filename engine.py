@@ -230,11 +230,17 @@ class RespondEngine:
 
         # 2) Selamlama/İlk temas: doğal bir giriş cümlesi + butonlar
         if any(k in t for k in ["merhaba", "selam", "selamlar", "slm", "hi", "hello", "hey"]):
+            if not self.is_business_hours():
+                fb = (self.FLOW.get("fallback") or {}).get("off_hours") or \
+                    "Şu an iş saatleri dışında olabiliriz. İsterseniz 'İhtiyacımı İlet' ile bilgilerinizi bırakın, ilk iş dönüş yapalım."
+                return {"text": fb, "quick_replies": self.menu_qr()}
+            # iş saatleri içindeyse standart selamlama
             greet = (
                 "Merhaba! 👋 Size en hızlı nasıl yardımcı olabilirim?\n"
                 "Aşağıdaki seçeneklerden birini dokunarak seçebilirsiniz."
             )
             return {"text": greet, "quick_replies": self.menu_qr()}
+
 
         # 3) SSS anahtar eşleşmesi
         faq = self.try_faq_reply(text)
