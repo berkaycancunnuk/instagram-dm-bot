@@ -31,6 +31,42 @@ class RespondEngine:
         self.LAST_USER_TS: Dict[str, int] = {}
         self.SESSION_TTL = 60 * 60  # 1 saat
 
+        # ---------- Validators ----------
+    def _is_valid_email(self, s: str) -> bool:
+        """
+        Basit e-posta kontrolü:
+        - Boş değil
+        - Bir tane '@' var (en azından bir '@' içeriyor)
+        - '@' sonrası kısımda bir '.' var (örn: gmail.com)
+        - Boşluk yok
+        Bu regex kadar sert değil ama pratikte saçmalıkları eler.
+        """
+        if not s:
+            return False
+        s = s.strip()
+        return ("@" in s) and ("." in s.split("@")[-1]) and (" " not in s)
+
+    def _is_valid_phone(self, s: str) -> bool:
+        """
+        Telefonu 'rakam dışını at' yaklaşımıyla normalize ederiz:
+        - Tüm karakterlerden sadece rakamları topla
+        - 10–15 arası rakam varsa 'olur' say
+        Neden 10–15? Türkiye’de 10 (baştaki 0’sız 10), uluslararası +90 dahil olunca 12–13,
+        dünya genelinde toleranslı bir aralık.
+        """
+        if not s:
+            return False
+        digits = "".join(ch for ch in s if ch.isdigit())
+        return 10 <= len(digits) <= 15
+
+    def _looks_like_contact(self, s: str) -> bool:
+        """
+        'Bu bir iletişim bilgisine benziyor mu?' üst kuralı:
+        - E-posta veya telefon kurallarından biri tutarsa True.
+        Tek noktadan çağırıp karar veriyoruz (ileride kuralları geliştirirsek tek yerden güncelleriz).
+        """
+        return self._is_valid_email(s) or self._is_valid_phone(s)
+
     # ---------- Session Helpers ----------
     def _now(self) -> int:
         return int(time.time())
@@ -136,6 +172,19 @@ class RespondEngine:
             if save_as:
                 self.set_kv(uid, f"lead_data.{save_as}", (incoming_text or "").strip())
                 s = self.get_session(uid)
+            
+            # >>> tam burası: "contact" adımıysa ve değer geçersizse AYNI ADIMDA KAL <<<
+            if save_as == "contact":
+                user_val = (incoming_text or "").strip()
+                if not self._looks_like_contact(user_val):
+                    retry_msg = (
+                        "Bunu bir iletişim bilgisi olarak anlayamadım. "
+                        "Lütfen e-posta (örn: ad@site.com) ya da telefon (örn: +90 5xx xxx xx xx) yazın."
+                    )
+                    return {
+                        "text": retry_msg,
+                        "quick_replies": self.lead_next_qr()
+                    }
 
         # 2) Sonraki adıma geç
         i += 1
