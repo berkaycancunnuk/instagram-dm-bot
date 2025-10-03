@@ -6,51 +6,72 @@ business_hours:
   end: 22
 
 menu:
-  items:
-    - "/lead – İhtiyaç formu"
-    - "/demo – 15dk görüşme"
-    - "/fiyat – Paketler"
-    - "/human – Canlı destek"
   header: |
-    {brand} Menü:
+    Merhaba! 👋 Size nasıl yardımcı olabiliriz?
+  items:
+    - "Paketler & fiyat"
+    - "Randevu / Demo Al"
+    - "Soru Sor / SSS"
+    - "Teklif / İletişim Bırak"
   footer: ""
 
 faq:
-  - keys: ["fiyat","ücret","price","paket"]
+  #Fiyat/Paket
+  - keys: ["fiyat", "paket", "ücret", "price"]
     reply: |
       Paketlerimiz:
-      - Starter: Aylık 49$ — temel SSS + lead formu
-      - Mid: 149$ — hafıza + entegrasyonlar
-      - Premium: 299$ — gelişmiş akışlar
+      - Başlangıç Paketimiz - 49$/ay (temel SSS + lead formu)
+      - Standart Paketimiz -  149$/ay (hafıza + entegrasyon)
+      - Premium Paketimiz - 299$/ay (gelişmiş akışlar)
+      Daha fazla detay öğrenmek isterseniz her zaman yazabilirsiniz. İsterseniz 15 dakikalık bir toplantı ile tüm detayları konuşabiliriz : {cal_link}
     cta: "/lead"
+  
+  # SSS: çalışma saatleri
+  - keys: ["saat","çalışma","açık mısınız","ne zaman","mesai"]
+    reply: |
+      Çalışma saatlerimiz: Hafta içi {start}:00–{end}:00 ve hafta sonu {start}:00–{end}:00. Mesai saatlerimiz dışında da bize ulaşmak için bir mesaj bırakmanız yeterli.
+    cta: "/lead"
+
+    # SSS: adres / konum
+  - keys: ["adres","konum","lokasyon","nerede"]
+    reply: |
+      Adresimiz: 81 The Crescent / London / WC81 9RX — Yol tarifi için profilimizdeki "Adresimiz" butonunu kullanabilirsiniz.
+    cta: "/lead"
+
+    # SSS: iade/teslimat (e-ticaret opsiyonel)
+  - keys: ["iade","kargo","teslimat","kargom"]
+    reply: |
+      Teslimatlarımız ortalama 1–3 iş günü içerisinde olmaktadır. 14 gün içinde koşulsuz şartsız ürün iadesi almaktayız.
+    cta: "/lead"
+
 
 lead:
   steps:
     - id: q1
-      ask: "Sizi tanıyalım 🙌 Adınız ve işletme adınız nedir?"
+      ask: "Merhaba 🙌 Sizi daha iyi tanıyabilmek için adınızı ve (varsa) sahibi olduğunuz işletmeyi öğrenebilir miyim?"
       save_as: who
     - id: q2
-      ask: "Chatbot’u en çok hangi amaçla kullanmak istiyorsunuz? (satış/SSS/randevu/destek)"
+      ask: "Bize kısaca ihtiyacınızı yazabilir misiniz? 'randevu otomasyonu' / 'mağaza SSS' / 'kampanya botu' gibi."
       save_as: need
     - id: q3
-      ask: "Size ulaşabileceğimiz e-posta ya da WhatsApp numarası?"
+      ask: "Size ulaşabileceğimiz bir e-posta ya da telefon numarası bırakabilir misiniz?"
       save_as: contact
-  summary_header: "Harika! 🎯 Aşağıdaki bilgileri aldım:"
+  summary_header: "Değerli vaktinizi ayırdığınız için teşekkürler."
   summary: |
     • Kişi/İşletme: {{who}}
     • İhtiyaç: {{need}}
     • İletişim: {{contact}}
   after: |
-    Ekibimiz en kısa sürede dönüş yapacak.
-    {{offhours_note}}
-    İsterseniz kısa bir demo planlayalım: {cal_link}
+    Ekibimiz en kısa sürede size geri dönüş sağlayacak.
+    Değerli vaktinizi ayırdığınız için çok teşekkürler.
 
 fallback:
   in_hours: |
-    Anladım. Şöyle ilerleyebiliriz:
-    • Paketler: /fiyat
-    • Demo: /demo
-    • İhtiyaç bırak: /lead
+    Talebinizi tam anlayamadım. Lütfen aşağıdaki seçeneklerden birini seçebilir misiniz?
+    • Paketler & Fiyat
+    • Randevu / Demo Al
+    • Soru Sor / SSS
+    • Teklif / İletişim Bırak
   off_hours: |
-    Şu an iş saatleri dışında olabiliriz.
-    /lead yazarak bilgilerinizi bırakırsanız ilk iş dönüş yaparız. 🙏
+    Şu an mesai saatleri dışında olabiliriz.
+    Ekibimizin size hızlıca geri dönüş sağlaması için 'Teklif / İletişim' seçeneğine dokunabilirsiniz.
