@@ -2,8 +2,8 @@ brand: "DemoBrand"
 cal_link: "https://cal.com/yourname/15min"
 
 business_hours:
-  start: 23
-  end: 23
+  start: 9  
+  end: 22
 
 menu:
   items:
