@@ -1,43 +1,33 @@
 # integrations/sinks.py
-import os
-import json
-import logging
-import requests
+import os, time, requests, logging, json
 
-logger = logging.getLogger("igbot")
+log = logging.getLogger("igbot")
 
-SHEETS_WEBHOOK_URL = os.getenv("SHEETS_WEBHOOK_URL")
-WEBHOOK_SECRET     = os.getenv("WEBHOOK_SECRET")
-
-# Ayrı session ve timeout: yeniden kullanım + daha hızlı
-_SESSION = requests.Session()
-_TIMEOUT = (5, 10)  # (connect, read) saniye
+SHEETS_WEBHOOK_URL = os.getenv("SHEETS_WEBHOOK_URL", "").strip()
+WEBHOOK_SECRET     = os.getenv("WEBHOOK_SECRET", "").strip()
 
 def post_lead_to_sheets(user_id: str, brand: str, source: str, lead_dict: dict) -> dict:
-    """
-    Google Apps Script (Web App) uç noktasına lead kaydı gönderir.
-    Env:
-      - SHEETS_WEBHOOK_URL = https://script.google.com/macros/s/.../exec
-      - WEBHOOK_SECRET     = server-side shared secret
-    """
     if not SHEETS_WEBHOOK_URL:
-        logger.warning("sheets_skip: SHEETS_WEBHOOK_URL empty")
-        return {"ok": False, "skip": "no url"}
+        log.warning("sheets_skip: SHEETS_WEBHOOK_URL empty")
+        return {"ok": False, "skip": "no_url"}
 
     payload = {
         "user_id": user_id,
-        "brand"  : brand,
-        "source" : source,
-        "lead"   : lead_dict or {},
-        "secret" : WEBHOOK_SECRET or "",
+        "brand": brand,
+        "source": source,
+        "lead": lead_dict or {},
+        "secret": WEBHOOK_SECRET,
     }
 
+    t0 = time.time()
+    resp = requests.post(SHEETS_WEBHOOK_URL, json=payload, timeout=10)
+    dur = int((time.time() - t0) * 1000)
+
     try:
-        resp = _SESSION.post(SHEETS_WEBHOOK_URL, json=payload, timeout=_TIMEOUT)
-        # Yanıtı logla (kısaltıp)
-        body_snip = (resp.text or "")[:300].replace("\n", " ")
-        logger.info(f"sheets_post status={resp.status_code} body_snip={body_snip}")
-        return {"ok": resp.status_code == 200, "status": resp.status_code, "body": body_snip}
-    except Exception as e:
-        logger.exception(f"sheets_exc {e}")
-        return {"ok": False, "error": repr(e)}
+        body = resp.json()
+        log.info(f"sheets_post status={resp.status_code} ok={body.get('ok')} dur_ms={dur}")
+        return {"ok": bool(body.get("ok")), "status": resp.status_code, "dur_ms": dur, "body": body}
+    except Exception:
+        snip = (resp.text or "")[:140].replace("\n", " ")
+        log.info(f"sheets_post status={resp.status_code} body_snip={snip} dur_ms={dur}")
+        return {"ok": False, "status": resp.status_code, "dur_ms": dur, "body_snip": snip}
