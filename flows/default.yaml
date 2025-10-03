@@ -2,8 +2,8 @@ brand: "YourBot"
 cal_link: "https://cal.com/yourname/15min"
 
 business_hours:
-  start: 9
-  end: 18
+  start: 23
+  end: 23
 
 menu:
   items:

@@ -10,6 +10,7 @@ import yaml
 from pathlib import Path
 
 FLOWS_PATH = Path(__file__).parent / "flows" / "default.yaml"
+FLOW_MTIME = None  # YAML hot-reload için son bilinen mtime
 FLOW = {}
 
 load_dotenv()
@@ -34,7 +35,12 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 # --- [PATCH B: YAML'dan config yükleme + saat yardımcıları] ---
 from zoneinfo import ZoneInfo
-TIMEZONE = ZoneInfo("Europe/Istanbul")  # istersen .env ile parametrize ederiz
+TZ_NAME = os.getenv("TIMEZONE","Europe/Istanbul")
+try:
+    TIMEZONE = ZoneInfo(TZ_NAME)
+except Exception:
+    logger.warning(f"Invalid TIMEZONE={TZ_NAME}, fallback to Europe/Istanbul")
+    TIMEZONE = ZoneInfo("Europe/Istanbul")
 
 def load_flow():
     """flows/default.yaml dosyasını belleğe yükle."""
@@ -77,6 +83,12 @@ def render_double_brace(text: str, data: dict) -> str:
 
 # Uygulama ayağa kalkarken YAML'ı bir kez yükle
 load_flow()
+
+def _flow_mtime():
+    try:
+        return FLOWS_PATH.stat().st_mtime
+    except Exception:
+        return None
 
 # engine entegrasyonu
 from engine import RespondEngine
@@ -199,6 +211,37 @@ def _graph_send_with_retry(url: str, params: dict, payload: dict, max_attempts: 
     return 599, {"error": "exhausted retries"}
 
 app = FastAPI()
+
+async def _watch_flow_changes(poll_seconds: float = 5.0):
+    """
+    flows/default.yaml dosyasını izler; değişince yeniden yükler.
+    """
+    global FLOW_MTIME, FLOW
+    # ilk mtime
+    FLOW_MTIME = _flow_mtime()
+    logger.info(f"Flow watch started, mtime={FLOW_MTIME}")
+    while True:
+        try:
+            await asyncio.sleep(poll_seconds)
+            m = _flow_mtime()
+            if m and FLOW_MTIME and m > FLOW_MTIME:
+                logger.info("Flow file changed, reloading...")
+                load_flow()               # FLOW global’ini günceller
+                ENGINE.FLOW = FLOW        # engine’e güncel referansı ver
+                FLOW_MTIME = m
+                logger.info("Flow reloaded.")
+        except Exception as e:
+            logger.exception(f"Flow watch error: {e}")
+            await asyncio.sleep(poll_seconds)
+
+
+@app.on_event("startup")
+async def _on_startup():
+    # ilk mtime kaydı
+    global FLOW_MTIME
+    FLOW_MTIME = _flow_mtime()
+    # watcher'ı başlat
+    asyncio.create_task(_watch_flow_changes())
 
 @app.get("/")
 def root():
