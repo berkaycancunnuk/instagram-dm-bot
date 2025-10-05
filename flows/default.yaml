@@ -2,76 +2,142 @@ brand: "DemoBrand"
 cal_link: "https://cal.com/yourname/15min"
 
 business_hours:
-  start: 9  
+  start: 9
   end: 22
 
-menu:
-  header: |
-    Merhaba! 👋 Size nasıl yardımcı olabiliriz?
-  items:
-    - "Paketler & fiyat"
-    - "Randevu / Demo Al"
-    - "Soru Sor / SSS"
-    - "Teklif / İletişim Bırak"
-  footer: ""
+ui:
+  quick_replies:
+    - title: "Paketler & Fiyat"
+      payload: "UI:PRICING"
+      action: "pricing"
+    - title: "Randevu / Demo Al"
+      payload: "UI:DEMO"
+      action: "demo"
+    - title: "Teklif / İletişim Bırak"
+      payload: "UI:LEAD"
+      action: "lead"
+    - title: "Soru Sor / SSS"
+      payload: "UI:FAQ"
+      action: "faq"
+    - title: "Canlı Destek"
+      payload: "UI:HUMAN"
+      action: "human"
+
+  greetings:
+    in_hours: |
+      Merhaba! 👋 {brand} olarak size en hızlı nasıl yardımcı olabiliriz?
+      Aşağıdaki seçeneklerden birini dokunarak seçebilirsiniz.
+    off_hours: |
+      Şu an mesai saatleri dışındayız.
+      Aşağıdaki seçeneklerle ilerleyebilirsiniz. ✨ {brand} ekibi olarak size en kısa sürede döneceğiz.
+
+  faq_hint: |
+    Sorunuzu yazabilirsiniz; örnek: “adres”, “çalışma saatleri”, “iade”, “teslimat”, “ödeme”, “garanti”, “gizlilik”…
+
+  # SSS veya fiyat gibi tek cevaplı akışların SONUNA eklenecek mini menü (sohbeti canlı tutar)
+  post_answer_cta:
+    text: "Devam etmek ister misiniz?"
+    options: ["Paketler & Fiyat", "Randevu / Demo", "Teklif / İletişim", "Soru Sor / SSS", "Canlı Destek"]
 
 faq:
-  #Fiyat/Paket
+  # Fiyat / Paket
   - keys: ["fiyat", "paket", "ücret", "price"]
     reply: |
       Paketlerimiz:
-      - Başlangıç Paketimiz - 49$/ay (temel SSS + lead formu)
-      - Standart Paketimiz -  149$/ay (hafıza + entegrasyon)
-      - Premium Paketimiz - 299$/ay (gelişmiş akışlar)
-      Daha fazla detay öğrenmek isterseniz her zaman yazabilirsiniz. İsterseniz 15 dakikalık bir toplantı ile tüm detayları konuşabiliriz : {cal_link}
-    cta: "/lead"
-  
-  # SSS: çalışma saatleri
-  - keys: ["saat","çalışma","açık mısınız","ne zaman","mesai"]
-    reply: |
-      Çalışma saatlerimiz: Hafta içi {start}:00–{end}:00 ve hafta sonu {start}:00–{end}:00. Mesai saatlerimiz dışında da bize ulaşmak için bir mesaj bırakmanız yeterli.
-    cta: "/lead"
+      • Başlangıç — 49$/ay (temel SSS + lead formu)
+      • Standart — 149$/ay (hafıza + entegrasyon)
+      • Premium — 299$/ay (gelişmiş akışlar)
+      Not: İhtiyacınıza göre esnek kurulum ve ek modüller mevcut. Dilerseniz 15 dakikalık hızlı bir görüşme planlayabiliriz: {cal_link}
+    cta: "lead"
 
-    # SSS: adres / konum
+  # Çalışma saatleri
+  - keys: ["saat", "çalışma", "açık mısınız", "ne zaman", "mesai"]
+    reply: |
+      Çalışma saatlerimiz: {start}:00–{end}:00 (hafta içi/sonu). 
+      {{offhours_note}}Mesai dışındaysak mesaj bırakabilirsiniz. {brand} ekibi olarak size en kısa sürede dönüş yapacağız.
+    cta: "lead"
+
+  # Adres / konum
   - keys: ["adres","konum","lokasyon","nerede"]
     reply: |
-      Adresimiz: 81 The Crescent / London / WC81 9RX — Yol tarifi için profilimizdeki "Adresimiz" butonunu kullanabilirsiniz.
-    cta: "/lead"
+      Adresimiz: 81 The Crescent / London / WC81 9RX
+      Yol tarifi için profilimizdeki “Adresimiz” bağlantısını kullanabilirsiniz.
+    cta: "lead"
 
-    # SSS: iade/teslimat (e-ticaret opsiyonel)
+  # İade / teslimat (e-ticaret)
   - keys: ["iade","kargo","teslimat","kargom"]
     reply: |
-      Teslimatlarımız ortalama 1–3 iş günü içerisinde olmaktadır. 14 gün içinde koşulsuz şartsız ürün iadesi almaktayız.
-    cta: "/lead"
+      Teslimatlar ortalama 1–3 iş günü içinde. 14 gün içinde koşulsuz iade alıyoruz.
+      Sipariş numaranızla yazarsanız durumu anlık kontrol edelim.
+    cta: "lead"
 
+  # Ödeme yöntemleri (genel)
+  - keys: ["ödeme","kart","havale","kapıda ödeme"]
+    reply: |
+      Kredi/banka kartı ve havale/eft ile ödeme alıyoruz. Kurumsal teklifler için proforma düzenleyebiliriz.
+    cta: "lead"
+
+  # Garanti / destek
+  - keys: ["garanti","destek","servis","bakım"]
+    reply: |
+      Ürün/hizmet kapsamında standart garanti ve e-posta/WhatsApp destek sunuyoruz. Kurumsal SLA seçenekleri mevcut.
+    cta: "lead"
+
+  # Gizlilik / KVKK
+  - keys: ["gizlilik","kvkk","veri","privacy"]
+    reply: |
+      Bilgileriniz KVKK’ya uygun şekilde yalnızca talebinizi karşılamak için kullanılır; 3. kişilerle paylaşmayız.
+    cta: "lead"
+
+  # Değişiklik ve İptal
+  - keys: ["iptal","değişiklik","rezervasyon iptal","randevu iptal"]
+    reply: |
+      İptal/değişiklik işlemlerini 24 saat öncesine kadar ücretsiz yapabilirsiniz. Detay için mesaj atmanız yeterli.
+    cta: "lead"
+
+  # Stok Durumu
+  - keys: ["uygunluk","ürün uygun mu","stok","stokta var mı"]
+    reply: |
+      Stok/uygunluk durumunu anlık kontrol ediyoruz. Lütfen talebinizi kısaca yazın; size bilgi verelim.
+    cta: "lead"
 
 lead:
   steps:
     - id: q1
-      ask: "Merhaba 🙌 Sizi daha iyi tanıyabilmek için adınızı ve (varsa) sahibi olduğunuz işletmeyi öğrenebilir miyim?"
+      ask: "Sizi tanıyalım 🙌 Adınız ve (varsa) işletme adınız nedir?"
       save_as: who
     - id: q2
-      ask: "Bize kısaca ihtiyacınızı yazabilir misiniz? 'randevu otomasyonu' / 'mağaza SSS' / 'kampanya botu' gibi."
+      ask: "Bize kısaca ihtiyacınızı yazar mısınız? Örn: “randevu otomasyonu”, “mağaza SSS”, “kampanya botu”."
       save_as: need
     - id: q3
-      ask: "Size ulaşabileceğimiz bir e-posta ya da telefon numarası bırakabilir misiniz?"
+      ask: "Size ulaşabileceğimiz bir e-posta veya telefon numarası bırakır mısınız?"
       save_as: contact
-  summary_header: "Değerli vaktinizi ayırdığınız için teşekkürler."
+  summary_header: "Teşekkürler! 🎯 Aşağıdaki bilgileri aldım:"
   summary: |
     • Kişi/İşletme: {{who}}
     • İhtiyaç: {{need}}
-    • İletişim Bilgisi: {{contact}}
+    • İletişim: {{contact}}
   after: |
-    Ekibimiz en kısa sürede size geri dönüş sağlayacak.
-    Değerli vaktinizi ayırdığınız için çok teşekkürler.
+    Ekibimiz en kısa sürede dönüş yapacak.
+    {{offhours_note}}İsterseniz hızlı bir görüşme de planlayabiliriz: {cal_link}
+
+human:
+  # Canlı destek tıklandığında verilecek net mesaj + beklenti yönetimi
+  in_hours: |
+    Canlı destek talebinizi ilettik. Mesai saatlerinde genellikle birkaç dakika içinde dönüş yapıyoruz. 
+    Beklerken isterseniz “Teklif / İletişim” ile bilgilerinizi önden paylaşabilirsiniz.
+  off_hours: |
+    Şu an mesai saatleri dışındayız. Talebinizi ilettik; ilk iş saatinde size dönüş yapacağız. 
+    Beklemek istemezseniz “Teklif / İletişim Bırak” ile bilgilerinizi paylaşabilirsiniz.
 
 fallback:
   in_hours: |
-    Talebinizi tam anlayamadım. Lütfen aşağıdaki seçeneklerden birini seçebilir misiniz?
+    Tam anlayamadım. Şöyle ilerleyebiliriz:
     • Paketler & Fiyat
     • Randevu / Demo Al
-    • Soru Sor / SSS
     • Teklif / İletişim Bırak
+    • Soru Sor / SSS
+    • Canlı Destek
   off_hours: |
     Şu an mesai saatleri dışında olabiliriz.
-    Ekibimizin size hızlıca geri dönüş sağlaması için 'Teklif / İletişim Bırak' seçeneğine dokunabilirsiniz.
+    Bilgilerinizi bırakırsanız ilk iş dönüş yaparız. 🙏
