@@ -77,7 +77,7 @@ class RespondEngine:
     # ---------- Session Helpers ----------
     def _now(self) -> int:
         return int(time.time())
-
+    
     def touch_user(self, uid: str):
         """24h pencere için son kullanıcı mesaj saatini güncelle."""
         self.LAST_USER_TS[uid] = self._now()
@@ -122,7 +122,7 @@ class RespondEngine:
             payload = item.get("payload") or ""
             if title and payload:
                 qrs.append(self._qr(title, payload))
-        return qrs
+        return qrs[:13]
 
     def _qr_from_titles(self, titles: List[str]) -> List[Dict[str, str]]:
         """
@@ -138,7 +138,7 @@ class RespondEngine:
             t = (item.get("title") or "").strip()
             if t.lower() in title_set:
                 out.append(self._qr(t, item.get("payload") or ""))
-        return out
+        return out[:13]
     
     def _payload_to_action(self, payload: str) -> str | None:
         """
@@ -159,10 +159,13 @@ class RespondEngine:
         """
         ui = self.FLOW.get("ui") or {}
         g = ui.get("greetings") or {}
-        if self.is_business_hours():
-            return (g.get("in_hours") or "Merhaba! 👋 Size nasıl yardımcı olabilirim?")
-        else:
-            return (g.get("off_hours") or "Şu an mesai dışındayız; yine de yardımcı olmaya çalışayım.")
+        raw = (g.get("in_hours") if self.is_business_hours() else g.get("off_hours")) \
+              or ("Merhaba! 👋 Size nasıl yardımcı olabilirim?")
+        # 1) {brand}/{cal_link}
+        txt = raw.format(brand=self.conf_brand(), cal_link=self.conf_cal_link())
+        # 2) {{offhours_note}} vs. kullanmak istersen
+        txt = self.render_double_brace(txt, {"offhours_note": self._offhours_note()})
+        return txt
 
     def _faq_hint(self) -> str:
         """
@@ -172,6 +175,17 @@ class RespondEngine:
         return (ui.get("faq_hint") or 
                 "Sorunuzu yazabilirsiniz; örnek: 'adres', 'çalışma saatleri', 'iade', 'teslimat'…")
     
+    def _pretty_title(self, s: str) -> str:
+        # Basit Türkçe başlık stilizasyonu (çok ileriye gitmeden)
+        s = (s or "").strip()
+        if not s:
+            return s
+        # 'kvkk' gibi bilinen kısaltmaları büyük yaz
+        if s.upper() in {"KVKK", "SSS"}:
+            return s.upper()
+        # Diğerlerini ilk harf büyük
+        return s[:1].upper() + s[1:]
+    
     def _faq_topic_qr(self, limit: int = 8) -> List[Dict[str, str]]:
         """
         FLOW.faq içinden her öğenin ilk 'keys' elemanını alır,
@@ -179,6 +193,7 @@ class RespondEngine:
         """
         faqs = self.FLOW.get("faq") or []
         out = []
+        seen_titles = set()
         for f in faqs[:limit]:
             keys = f.get("keys") or []
             if not keys:
@@ -186,11 +201,14 @@ class RespondEngine:
             key = str(keys[0]).strip()
             if not key:
                 continue
-            # Başlık (ilk harfi büyük), payload standardı
-            title = key.capitalize()
+            title = self._pretty_title(key)
+            if title.lower() in seen_titles:
+                continue
+            seen_titles.add(title.lower())
             payload = f"FAQ:{key}"
             out.append(self._qr(title, payload))
-        return out
+            
+        return out[:13]
 
     def _handle_faq_payload(self, payload: str) -> Dict[str, Any] | None:
         """
@@ -243,6 +261,17 @@ class RespondEngine:
         else:
             return human.get("off_hours") or "Şu an mesai dışında. İlk iş saatinde yazacağız."
 
+    def _reply(self, text: str, qr: List[Dict[str, str]] | None = None) -> Dict[str, Any]:
+        """
+        Kısa cevap helper'ı:
+        - 'qr' verilirse onu kullanır,
+        - verilmezse default olarak ana menü quick reply'lerini ekler.
+        """
+        return {
+            "text": text,
+            "quick_replies": (qr if qr is not None else self.menu_qr())
+        }
+
 
     def lead_next_qr(self) -> List[Dict[str, str]]:
         """Lead akışı sırasında mini kısayollar (opsiyonel)."""
@@ -269,16 +298,6 @@ class RespondEngine:
         return "Şu an iş saatleri dışında olabiliriz. " if not self.is_business_hours() else ""
 
     # ---------- Content Builders (YAML) ----------
-    def menu_text(self) -> str:
-        cfg = self.FLOW.get("menu") or {}
-        header = (cfg.get("header") or "{brand} Menü:").format(
-            brand=self.conf_brand(), cal_link=self.conf_cal_link()
-        )
-        items = "\n".join(cfg.get("items") or [])
-        footer = (cfg.get("footer") or "").format(
-            brand=self.conf_brand(), cal_link=self.conf_cal_link()
-        )
-        return "\n".join([header, items, footer]).strip()
 
     def try_faq_reply(self, text: str) -> str | None:
         faqs = self.FLOW.get("faq") or []
@@ -287,14 +306,20 @@ class RespondEngine:
             keys = [k.lower() for k in (f.get("keys") or [])]
             if any(k in t for k in keys):
                 start_h, end_h = self._hours_from_flow()
+                # 1) {brand}/{cal_link}/{start}/{end
                 base = (f.get("reply") or "").format(
                     brand=self.conf_brand(), 
                     cal_link=self.conf_cal_link(),
                     start=start_h,
                     end=end_h
                 )
-                cta = f.get("cta")
-                return base + (f"\n\nDevam için dokunun: Paketler" if cta == "/lead" else "")
+                # 2) {{offhours_note}} gibi çift süslüleri de doldur
+                base = self.render_double_brace(base, {
+                    "offhours_note": self._offhours_note()
+                })
+                # CTA (yalın 'lead' beklenir)
+                cta = (f.get("cta") or "").strip().lower()
+                return base
         return None
 
     # ---------- Lead Flow ----------
@@ -318,15 +343,27 @@ class RespondEngine:
 
         # 1) Bu adımdaki cevabı kaydet
         if 0 <= i < len(steps):
-            save_as = steps[i].get("save_as")
-            if save_as:
-                self.set_kv(uid, f"lead_data.{save_as}", (incoming_text or "").strip())
-                s = self.get_session(uid)
+            step = steps[i]
+            save_as = step.get("save_as")
+            val = (incoming_text or "").strip()
+
+            norm = val.lower()
+            if norm in {"devam", "continue", "skip"}:
+                return {
+                    "text": "Kısa bir yanıt rica edeceğim 🙏 Örneğin birkaç kelime yeterli.",
+                    "quick_replies": self.lead_next_qr()
+                }
+
+            # 1.a) 'who' ve 'need' için BOŞ mesaja izin verme
+            if save_as in ("who","need") and not val:
+                return {
+                    "text": "Boş bırakmayalım 🙏 Kısaca yazar mısınız?",
+                    "quick_replies": self.lead_next_qr()
+                }
             
-            # >>> tam burası: "contact" adımıysa ve değer geçersizse AYNI ADIMDA KAL <<<
+            # 1.b) 'contact' için e-posta/telefon format kontrolü
             if save_as == "contact":
-                user_val = (incoming_text or "").strip()
-                if not self._looks_like_contact(user_val):
+                if not self._looks_like_contact(val):
                     retry_msg = (
                         "Bunu bir iletişim bilgisi olarak anlayamadım. "
                         "Lütfen e-posta (örn: ad@site.com) ya da telefon (örn: +90 5xx xxx xx xx) yazın."
@@ -335,6 +372,11 @@ class RespondEngine:
                         "text": retry_msg,
                         "quick_replies": self.lead_next_qr()
                     }
+
+            # 1.c) Buraya geldiysek veri GEÇERLİ → şimdi kaydet
+            if save_as:
+                self.set_kv(uid, f"lead_data.{save_as}", val)
+                s = self.get_session(uid)
 
         # 2) Sonraki adıma geç
         i += 1
@@ -381,7 +423,14 @@ class RespondEngine:
             )
         except Exception as e:
             import logging
-            logging.getLogger("igbot").warning(f"Sheets sink post failed: {e}")
+            logging.getLogger("igbot").warning(
+                "Sheets sink post failed uid=%s who=%r need=%r contact=%r err=%r",
+                uid,
+                (lead_data.get("who", "")),
+                (lead_data.get("need", "")),
+                (lead_data.get("contact", "")),
+                e,
+            )
 
 
         # 7) Kullanıcıya final mesajı + ana menü QR’ları
@@ -406,7 +455,7 @@ class RespondEngine:
                 return handled
             
             # SONRA: Sabit payload → action çöz
-            action = self._payload_to_action(quick_payload) or ""
+            action = (self._payload_to_action(quick_payload) or "").lower()
 
             if action == "pricing":
                 # 'fiyat' SSS’ini çağırıp post-CTA ekle
@@ -414,14 +463,18 @@ class RespondEngine:
                 cta_text, cta_qr = self._post_answer_cta_block()
                 if cta_text and cta_qr:
                     return {"text": f"{base}\n\n{cta_text}", "quick_replies": cta_qr}
-                return {"text": base, "quick_replies": self.menu_qr()}
+                return self._reply(base)
 
             if action == "demo":
                 txt = f"Takvimden randevu alabilirsiniz: {self.conf_cal_link()}"
                 note = self._offhours_note()
                 if note:
                     txt += f"\n{note.strip()}"
-                return {"text": txt, "quick_replies": self.menu_qr()}
+                
+                cta_text, cta_qr = self._post_answer_cta_block()
+                if cta_text and cta_qr:
+                    return {"text": f"{txt}\n\n{cta_text}", "quick_replies": cta_qr}
+                return self._reply(txt)
 
             if action == "lead":
                 return self.start_lead(uid)
@@ -438,7 +491,7 @@ class RespondEngine:
                 return {"text": self._human_text(), "quick_replies": self.menu_qr()}
 
             # Tanımsız action → menüye dön
-            return {"text": "Nasıl yardımcı olabilirim?", "quick_replies": self.menu_qr()}
+            return self._reply("Nasıl yardımcı olabilirim?")
 
         # 1) Lead akışı aktifse → ilerlet
         if s["state"] == "lead.active":
@@ -447,8 +500,10 @@ class RespondEngine:
         t = (text or "").strip().lower()
 
         # 2) Selamlama/İlk temas: doğal bir giriş cümlesi + butonlar
-        if any(k in t for k in ["merhaba", "selam", "selamlar", "slm", "hi", "hello", "hey"]):
-            return {"text": self._greeting_text(), "quick_replies": self.menu_qr()}
+        if any(k in t for k in ["merhaba", "selam", "selamlar", "slm", "hi", "hello", "hey", "iyi günler",
+                                "sa","sea","selamun aleykum","selamün aleyküm","günaydın", "iyi akşamlar"
+        ]):
+            return self._reply(self._greeting_text())
 
         # 3) SSS anahtar eşleşmesi
         faq = self.try_faq_reply(text)
@@ -456,7 +511,7 @@ class RespondEngine:
             cta_text, cta_qr = self._post_answer_cta_block()
             if cta_text and cta_qr:
                 return {"text": f"{faq}\n\n{cta_text}", "quick_replies": cta_qr}
-            return {"text": faq, "quick_replies": self.menu_qr()}
+            return self._reply(faq)
 
         # 4) İş saati dışı fallback
         if not self.is_business_hours():
