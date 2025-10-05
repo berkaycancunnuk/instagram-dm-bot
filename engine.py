@@ -112,15 +112,99 @@ class RespondEngine:
         # Instagram Quick Reply: content_type "text" olmalı; title (27 char sınırı civarı),
         # payload sunucuyu bilgilendirir (message.quick_reply.payload ile gelir).
         return {"content_type": "text", "title": title[:25], "payload": payload}
+    
+    def _qr_from_yaml(self) -> List[Dict[str, str]]:
+        """YAML: ui.quick_replies içindeki başlık+payload’ları butona çevir."""
+        ui = self.FLOW.get("ui") or {}
+        qrs = []
+        for item in (ui.get("quick_replies") or []):
+            title = (item.get("title") or "")[:25]
+            payload = item.get("payload") or ""
+            if title and payload:
+                qrs.append(self._qr(title, payload))
+        return qrs
+
+    def _qr_from_titles(self, titles: List[str]) -> List[Dict[str, str]]:
+        """
+        YAML’da tanımlı quick reply’ler içinden, verilen başlıklara karşılık gelen butonları getir.
+        Başlık eşleşmesi case-insensitive yapılır.
+        """
+        if not titles:
+            return []
+        title_set = {t.strip().lower() for t in titles if t and isinstance(t, str)}
+        ui = self.FLOW.get("ui") or {}
+        out = []
+        for item in (ui.get("quick_replies") or []):
+            t = (item.get("title") or "").strip()
+            if t.lower() in title_set:
+                out.append(self._qr(t, item.get("payload") or ""))
+        return out
+    
+    def _payload_to_action(self, payload: str) -> str | None:
+        """
+        YAML: ui.quick_replies[*].payload → action çöz.
+        Örn: "UI:PRICING" -> "pricing"
+        """
+        if not payload:
+            return None
+        ui = self.FLOW.get("ui") or {}
+        for item in (ui.get("quick_replies") or []):
+            if (item.get("payload") or "").strip().upper() == payload.strip().upper():
+                return (item.get("action") or "").strip().lower() or None
+        return None
+
+    def _greeting_text(self) -> str:
+        """
+        YAML: ui.greetings içinden saat durumuna göre metni getir.
+        """
+        ui = self.FLOW.get("ui") or {}
+        g = ui.get("greetings") or {}
+        if self.is_business_hours():
+            return (g.get("in_hours") or "Merhaba! 👋 Size nasıl yardımcı olabilirim?")
+        else:
+            return (g.get("off_hours") or "Şu an mesai dışındayız; yine de yardımcı olmaya çalışayım.")
+
+    def _faq_hint(self) -> str:
+        """
+        YAML: ui.faq_hint varsa getir; yoksa varsayılan ipucu döndür.
+        """
+        ui = self.FLOW.get("ui") or {}
+        return (ui.get("faq_hint") or 
+                "Sorunuzu yazabilirsiniz; örnek: 'adres', 'çalışma saatleri', 'iade', 'teslimat'…")
 
     def menu_qr(self) -> List[Dict[str, str]]:
-        """Ana giriş seçenekleri (sektör-agnostik)."""
-        return [
-            self._qr("Paketler & Fiyat", "UI:PRICING"),
-            self._qr("Randevu / Demo Al", "UI:DEMO"),
-            self._qr("Teklif / İletişim Bırak", "UI:LEAD"),
-            self._qr("Soru Sor / SSS", "UI:FAQ"),
-        ]
+        """
+        Ana giriş seçenekleri YAML’dan gelir (ui.quick_replies).
+        Sıralama/başlık/payload tamamen YAML’a aittir.
+        """
+        return self._qr_from_yaml()
+
+    def _post_answer_cta_block(self) -> tuple[str | None, List[Dict[str, str]] | None]:
+        """
+        YAML: ui.post_answer_cta:
+          text: "Devam etmek ister misiniz?"
+          options: ["Paketler & Fiyat", "Randevu / Demo Al", ...]
+        Döndür: (cta_text, cta_quick_replies)
+        - Eğer tanımlı değilse (None, None) döner.
+        """
+        ui = self.FLOW.get("ui") or {}
+        cfg = ui.get("post_answer_cta") or {}
+        text = cfg.get("text")
+        options = cfg.get("options") or []
+        if not text or not options:
+            return None, None
+        return text, self._qr_from_titles(options)
+
+    def _human_text(self) -> str:
+        """
+        YAML: human.in_hours / human.off_hours’tan durumuna göre mesaj döndür.
+        """
+        human = (self.FLOW.get("human") or {})
+        if self.is_business_hours():
+            return human.get("in_hours") or "Canlı destek talebinizi ilettik. Birazdan yazacağız."
+        else:
+            return human.get("off_hours") or "Şu an mesai dışında. İlk iş saatinde yazacağız."
+
 
     def lead_next_qr(self) -> List[Dict[str, str]]:
         """Lead akışı sırasında mini kısayollar (opsiyonel)."""
@@ -138,6 +222,13 @@ class RespondEngine:
         except Exception:
             start, end = 9, 18
         return start, end
+
+    def _offhours_note(self) -> str:
+        """
+        Mesai dışındayken kısa bir uyarı metni döndürür; mesai içindeyse boş string.
+        Tek noktadan yönetim: cümleyi değiştirmek/yerelleştirmek istersen sadece burayı güncelle.
+        """
+        return "Şu an iş saatleri dışında olabiliriz. " if not self.is_business_hours() else ""
 
     # ---------- Content Builders (YAML) ----------
     def menu_text(self) -> str:
@@ -223,7 +314,7 @@ class RespondEngine:
         data = s.get("data") or {}
         lead_data = data.get("lead_data") or {}
 
-        off_note = "Şu an iş saatleri dışında olabiliriz. " if not self.is_business_hours() else ""
+        off_note = self._offhours_note()
 
         header = (lead_cfg.get("summary_header") or "Özet:")
         summary_tpl = (lead_cfg.get("summary") or "").strip()
@@ -271,31 +362,35 @@ class RespondEngine:
 
         # 0) Quick Reply seçimleri (payload) önce işlenir
         if quick_payload:
-            qp = quick_payload.upper()
-            if qp == "UI:PRICING":
-                ans = self.try_faq_reply("fiyat")
-                return {"text": ans or "Paket bilgileri için birazdan güncelleyeceğiz.", "quick_replies": self.menu_qr()}
-            if qp == "UI:DEMO":
+            action = self._payload_to_action(quick_payload) or ""
+            action = action.lower()
+
+            if action == "pricing":
+                # 'fiyat' SSS’ini çağırıp post-CTA ekle
+                base = self.try_faq_reply("fiyat") or "Paket bilgisini yakında güncelleyeceğiz."
+                cta_text, cta_qr = self._post_answer_cta_block()
+                if cta_text and cta_qr:
+                    return {"text": f"{base}\n\n{cta_text}", "quick_replies": cta_qr}
+                return {"text": base, "quick_replies": self.menu_qr()}
+
+            if action == "demo":
                 txt = f"Takvimden randevu alabilirsiniz: {self.conf_cal_link()}"
-                if not self.is_business_hours():
-                    txt += "\nNot: Şu an iş saatleri dışında olabiliriz."
+                note = self._offhours_note()
+                if note:
+                    txt += f"\n{note.strip()}"
                 return {"text": txt, "quick_replies": self.menu_qr()}
-            if qp == "UI:LEAD":
+
+            if action == "lead":
                 return self.start_lead(uid)
-            if qp == "UI:HUMAN":
-                # v1: bilgilendir; v1.2’de handover ekleyeceğiz
-                return {"text": "Canlı destek talebinizi ilettik. Bu arada ihtiyaçlarınızı kısaca /lead ile paylaşabilirsiniz.", "quick_replies": self.menu_qr()}
-            if qp == "UI:FAQ":
-                hint = (
-                    "Sorunuzu yazabilirsiniz; örneğin: 'adres', 'çalışma saatleri', 'iade', 'teslimat'..."
-                )
-                return {"text": hint, "quick_replies": self.menu_qr()}            
-            if qp == "UI:LEAD_CONT":
-                # lead içinde zaten progress çağrısı yapılacak; burada menüye dönmeyelim
-                pass
-            if qp == "UI:LEAD_CANCEL":
-                self.set_state(uid, "idle")
-                return {"text": "Tamamdır, lead formunu iptal ettik. Nasıl yardımcı olabilirim?", "quick_replies": self.menu_qr()}
+
+            if action == "faq":
+                return {"text": self._faq_hint(), "quick_replies": self.menu_qr()}
+
+            if action == "human":
+                return {"text": self._human_text(), "quick_replies": self.menu_qr()}
+
+            # Tanımsız action → menüye dön
+            return {"text": "Nasıl yardımcı olabilirim?", "quick_replies": self.menu_qr()}
 
         # 1) Lead akışı aktifse → ilerlet
         if s["state"] == "lead.active":
@@ -305,21 +400,14 @@ class RespondEngine:
 
         # 2) Selamlama/İlk temas: doğal bir giriş cümlesi + butonlar
         if any(k in t for k in ["merhaba", "selam", "selamlar", "slm", "hi", "hello", "hey"]):
-            if not self.is_business_hours():
-                fb = (self.FLOW.get("fallback") or {}).get("off_hours") or \
-                    "Şu an iş saatleri dışında olabiliriz. İsterseniz 'İhtiyacımı İlet' ile bilgilerinizi bırakın, ilk iş dönüş yapalım."
-                return {"text": fb, "quick_replies": self.menu_qr()}
-            # iş saatleri içindeyse standart selamlama
-            greet = (
-                "Merhaba! 👋 Size en hızlı nasıl yardımcı olabiliriz?\n"
-                "Aşağıdaki seçeneklerden birini dokunarak seçebilirsiniz."
-            )
-            return {"text": greet, "quick_replies": self.menu_qr()}
-
+            return {"text": self._greeting_text(), "quick_replies": self.menu_qr()}
 
         # 3) SSS anahtar eşleşmesi
         faq = self.try_faq_reply(text)
         if faq:
+            cta_text, cta_qr = self._post_answer_cta_block()
+            if cta_text and cta_qr:
+                return {"text": f"{faq}\n\n{cta_text}", "quick_replies": cta_qr}
             return {"text": faq, "quick_replies": self.menu_qr()}
 
         # 4) İş saati dışı fallback
