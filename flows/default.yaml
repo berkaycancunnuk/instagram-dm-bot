@@ -10,18 +10,23 @@ ui:
     - title: "Paketler & Fiyat"
       payload: "UI:PRICING"
       action: "pricing"
-    - title: "Randevu / Demo Al"
+
+    - title: "Canlı Destek"
+      payload: "UI:HUMAN"
+      action: "human"      
+    
+    - title: "Randevu / Demo"
       payload: "UI:DEMO"
       action: "demo"
-    - title: "Teklif / İletişim Bırak"
-      payload: "UI:LEAD"
-      action: "lead"
+    
     - title: "Soru Sor / SSS"
       payload: "UI:FAQ"
       action: "faq"
-    - title: "Canlı Destek"
-      payload: "UI:HUMAN"
-      action: "human"
+
+    - title: "Teklif / İletişim"
+      payload: "UI:LEAD"
+      action: "lead"
+    
 
   greetings:
     in_hours: |
@@ -134,8 +139,8 @@ fallback:
   in_hours: |
     Tam anlayamadım. Şöyle ilerleyebiliriz:
     • Paketler & Fiyat
-    • Randevu / Demo Al
-    • Teklif / İletişim Bırak
+    • Randevu / Demo
+    • Teklif / İletişim
     • Soru Sor / SSS
     • Canlı Destek
   off_hours: |

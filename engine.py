@@ -171,6 +171,44 @@ class RespondEngine:
         ui = self.FLOW.get("ui") or {}
         return (ui.get("faq_hint") or 
                 "Sorunuzu yazabilirsiniz; örnek: 'adres', 'çalışma saatleri', 'iade', 'teslimat'…")
+    
+    def _faq_topic_qr(self, limit: int = 8) -> List[Dict[str, str]]:
+        """
+        FLOW.faq içinden her öğenin ilk 'keys' elemanını alır,
+        başlıklaştırır ve payload=FAQ:<keyword> olacak şekilde quick reply listesi döndürür.
+        """
+        faqs = self.FLOW.get("faq") or []
+        out = []
+        for f in faqs[:limit]:
+            keys = f.get("keys") or []
+            if not keys:
+                continue
+            key = str(keys[0]).strip()
+            if not key:
+                continue
+            # Başlık (ilk harfi büyük), payload standardı
+            title = key.capitalize()
+            payload = f"FAQ:{key}"
+            out.append(self._qr(title, payload))
+        return out
+
+    def _handle_faq_payload(self, payload: str) -> Dict[str, Any] | None:
+        """
+        Quick Reply payload 'FAQ:...' formatındaysa ilgili SSS’i döndürür.
+        Post-CTA ekler. Format dışıysa None döner.
+        """
+        p = (payload or "").strip()
+        if not p.upper().startswith("FAQ:"):
+            return None
+        topic = p.split(":", 1)[1].strip() if ":" in p else ""
+        if not topic:
+            return None
+
+        base = self.try_faq_reply(topic) or "Bu konuda kayıtlı bir SSS bulunamadı."
+        cta_text, cta_qr = self._post_answer_cta_block()
+        if cta_text and cta_qr:
+            return {"text": f"{base}\n\n{cta_text}", "quick_replies": cta_qr}
+        return {"text": base, "quick_replies": self.menu_qr()}
 
     def menu_qr(self) -> List[Dict[str, str]]:
         """
@@ -362,8 +400,13 @@ class RespondEngine:
 
         # 0) Quick Reply seçimleri (payload) önce işlenir
         if quick_payload:
+            # ÖNCE: Dinamik SSS payload'larını (FAQ:<keyword>) yakala
+            handled = self._handle_faq_payload(quick_payload)
+            if handled:
+                return handled
+            
+            # SONRA: Sabit payload → action çöz
             action = self._payload_to_action(quick_payload) or ""
-            action = action.lower()
 
             if action == "pricing":
                 # 'fiyat' SSS’ini çağırıp post-CTA ekle
@@ -384,7 +427,12 @@ class RespondEngine:
                 return self.start_lead(uid)
 
             if action == "faq":
-                return {"text": self._faq_hint(), "quick_replies": self.menu_qr()}
+                hint = self._faq_hint()
+                topics = self._faq_topic_qr(limit=8)  # faq[*].keys[0] → "FAQ:<keyword>" butonları
+                if topics:
+                    return {"text": f"{hint}\n\nSıkça sorulan başlıklar:", "quick_replies": topics}
+                # SSS yoksa ana menüye düş
+                return {"text": hint, "quick_replies": self.menu_qr()}
 
             if action == "human":
                 return {"text": self._human_text(), "quick_replies": self.menu_qr()}
