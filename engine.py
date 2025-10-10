@@ -1,7 +1,7 @@
 # engine.py
 import time
 from typing import Callable, Dict, Any, List
-from integrations.sinks import post_lead_to_sheets
+from integrations.sinks import post_lead_to_sheets, notify_owner
 
 
 class RespondEngine:
@@ -488,7 +488,11 @@ class RespondEngine:
                 return {"text": hint, "quick_replies": self.menu_qr()}
 
             if action == "human":
-                return {"text": self._human_text(), "quick_replies": self.menu_qr()}
+                summary, meta = self._owner_alert_text(uid, last_text=text)
+                notify_owner(event="Canlı Destek Talebi", summary_text=summary, meta=meta)
+                seconds = int((self.FLOW.get("human") or {}).get("pause_seconds", 1800))
+                self._set_pause(uid, seconds=seconds)
+                return self._reply(self._human_text())
 
             # Tanımsız action → menüye dön
             return self._reply("Nasıl yardımcı olabilirim?")
