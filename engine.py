@@ -30,6 +30,10 @@ class RespondEngine:
         self.SESSIONS: Dict[str, Dict[str, Any]] = {}
         self.LAST_USER_TS: Dict[str, int] = {}
         self.SESSION_TTL = 60 * 60  # 1 saat
+        
+        #Canlı Destek Pause'ı
+        self.PAUSE_UNTIL: Dict[str, int] = {}
+
 
     def reload_flow(self, new_flow: Dict[str, Any]):
         """
@@ -106,6 +110,24 @@ class RespondEngine:
             s["data"][key] = val
         s["ts"] = self._now()
         return s
+    
+    #Pause ile İlgili Fonksiyonlar
+    def _set_pause(self, uid: str, seconds: int = 1800):
+        """Şu andan itibaren 'seconds' kadar kullanıcıyı pause'a al (insan devrede bekleniyor)."""
+        until = self._now() + max(0, int(seconds))
+        self.PAUSE_UNTIL[uid] = until
+
+    def _is_paused(self, uid: str) -> bool:
+        """Kullanıcı için bekleme (pause) aktif mi? Süresi bittiğinde otomatik kalkar."""
+        until = self.PAUSE_UNTIL.get(uid, 0)
+        if until <= 0:
+            return False
+        if self._now() >= until:
+            # Süre doldu, temizle
+            self.PAUSE_UNTIL.pop(uid, None)
+            return False
+        return True
+    
 
     # ---------- UI Helpers (Quick Replies) ----------
     def _qr(self, title: str, payload: str) -> Dict[str, str]:
@@ -260,6 +282,41 @@ class RespondEngine:
             return human.get("in_hours") or "Canlı destek talebinizi ilettik. Birazdan yazacağız."
         else:
             return human.get("off_hours") or "Şu an mesai dışında. İlk iş saatinde yazacağız."
+        
+    #Pause alındığında Canlı Destek Ekibine Bilgi Gönderme
+    def _owner_alert_text(self, uid: str, last_text: str | None = None) -> tuple[str, dict]:
+        """
+        Sahibine gidecek bildirim için:
+        - summary_text: tek bakışta durumu anlatan kısa metin
+        - meta: JSON olarak kanallara gidecek ayrıntılar
+        """
+        s = self.get_session(uid)
+        lead = (s.get("data") or {}).get("lead_data") or {}
+
+        # Kısa özet
+        summary = (
+            f"Kullanıcı: {uid}\n"
+            f"Marka: {self.conf_brand()}\n"
+            f"Durum: Canlı Destek Talebi\n"
+        )
+        if last_text:
+            summary += f"Son mesaj: {last_text[:160]}\n"
+
+        # Ayrıntılar
+        meta = {
+            "user_id": uid,
+            "brand": self.conf_brand(),
+            "in_business_hours": bool(self.is_business_hours()),
+            "last_text": (last_text or ""),
+            "lead_partial": {
+                "who": lead.get("who", ""),
+                "need": lead.get("need", ""),
+                "contact": lead.get("contact", ""),
+            },
+            "timestamp": self._now(),
+        }
+        return summary, meta
+
 
     def _reply(self, text: str, qr: List[Dict[str, str]] | None = None) -> Dict[str, Any]:
         """
@@ -446,6 +503,11 @@ class RespondEngine:
         { "text": "...", "quick_replies": [ ... ] }    # quick_replies opsiyonel
         """
         s = self.get_session(uid)
+        # 0.a) İnsan devrede bekleme (pause) kontrolü
+        if self._is_paused(uid):
+            # İnsan destek bekleniyor — botu minimumda tut
+            return self._reply("Talebinizi canlı destek ekibimize ilettik. En kısa sürede geri dönüş sağlayacağız 🙌")
+
 
         # 0) Quick Reply seçimleri (payload) önce işlenir
         if quick_payload:
@@ -489,7 +551,13 @@ class RespondEngine:
 
             if action == "human":
                 summary, meta = self._owner_alert_text(uid, last_text=text)
-                notify_owner(event="Canlı Destek Talebi", summary_text=summary, meta=meta)
+                try:
+                    notify_owner(event="Canlı Destek Talebi", summary_text=summary, meta=meta)
+                except Exception as e:
+                    # Bildirim kanalları çökerse bot yine yanıt versin.
+                    import logging
+                    logging.getLogger("igbot").warning("notify_owner error: %r", e)
+                    
                 seconds = int((self.FLOW.get("human") or {}).get("pause_seconds", 1800))
                 self._set_pause(uid, seconds=seconds)
                 return self._reply(self._human_text())
