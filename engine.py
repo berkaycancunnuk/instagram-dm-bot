@@ -128,6 +128,10 @@ class RespondEngine:
             return False
         return True
     
+    def _clear_pause(self, uid: str):
+        """Kullanıcıyı pause modundan çıkar (isteğe bağlı kaçış kelimeleri için)."""
+        self.PAUSE_UNTIL.pop(uid, None)
+
 
     # ---------- UI Helpers (Quick Replies) ----------
     def _qr(self, title: str, payload: str) -> Dict[str, str]:
@@ -282,6 +286,18 @@ class RespondEngine:
             return human.get("in_hours") or "Canlı destek talebinizi ilettik. Birazdan yazacağız."
         else:
             return human.get("off_hours") or "Şu an mesai dışında. İlk iş saatinde yazacağız."
+        
+    def _pause_text(self) -> str:
+        """
+        Pause modunda kullanıcıya döneceğimiz KISA kopya.
+        Tek yerden yönetelim ki ileride değiştirmek kolay olsun.
+        """
+        # İstersen off-hours notunu da ekleyebilirsin:
+        note = self._offhours_note()
+        base = "Talebinizi canlı desteğe ilettik. Bu sırada bot otomatik yanıt vermeyecek."
+        tail = " Bir süre sonra tekrar yazarsanız ya da ekip dönerse devam ederiz."
+        return f"{base}{(' ' + note.strip()) if note else ''}{tail}"
+
         
     #Pause alındığında Canlı Destek Ekibine Bilgi Gönderme
     def _owner_alert_text(self, uid: str, last_text: str | None = None) -> tuple[str, dict]:
@@ -506,7 +522,7 @@ class RespondEngine:
         # 0.a) İnsan devrede bekleme (pause) kontrolü
         if self._is_paused(uid):
             # İnsan destek bekleniyor — botu minimumda tut
-            return self._reply("Talebinizi canlı destek ekibimize ilettik. En kısa sürede geri dönüş sağlayacağız 🙌")
+            return self._reply(self._pause_text())
 
 
         # 0) Quick Reply seçimleri (payload) önce işlenir
@@ -550,17 +566,16 @@ class RespondEngine:
                 return {"text": hint, "quick_replies": self.menu_qr()}
 
             if action == "human":
+                # 1) Canlı Destek ekibine bildir
                 summary, meta = self._owner_alert_text(uid, last_text=text)
-                try:
-                    notify_owner(event="Canlı Destek Talebi", summary_text=summary, meta=meta)
-                except Exception as e:
-                    # Bildirim kanalları çökerse bot yine yanıt versin.
-                    import logging
-                    logging.getLogger("igbot").warning("notify_owner error: %r", e)
-                    
+                notify_owner(event="Canlı Destek Talebi", summary_text=summary, meta=meta)
+
+                # 2) Pause'a al
                 seconds = int((self.FLOW.get("human") or {}).get("pause_seconds", 1800))
                 self._set_pause(uid, seconds=seconds)
-                return self._reply(self._human_text())
+
+                # 3) Direkt pause mesajını göster
+                return self._reply(self._pause_text())
 
             # Tanımsız action → menüye dön
             return self._reply("Nasıl yardımcı olabilirim?")
